@@ -4,8 +4,7 @@ run_cpp_nemotron3_diar.py - C++ Nemotron-3-Diarization over a diarization
 manifest (the C++ counterpart of run_reference_nemotron3_diar_nemo.py).
 
 For each meeting this runs transcribe-cli with the streaming operating point
-pinned (--diar-preset, the public RUN-slot extension; `small` goes through
-the TRANSCRIBE_NEMOTRON3_DIAR_PRESET validation hook) and the tensor dump
+pinned (the TRANSCRIBE_NEMOTRON3_DIAR_PRESET hook: card names + `small`) and the tensor dump
 enabled. The dumped raw `diar.probs` [T, 8] (10 ms) is post-processed with the
 SAME function the reference runner uses (probs_to_rttm: NeMo
 ts_vad_post_processing, onset/offset 0.5, no filtering), so only the
@@ -90,10 +89,7 @@ def main() -> int:
             env = os.environ.copy()
             env["TRANSCRIBE_DUMP_DIR"] = tmp
             cmd = [args.cli, "--backend", args.backend, "-m", args.gguf]
-            if args.preset in CARD_PRESETS:
-                cmd += ["--diar-preset", args.preset]
-            else:
-                env["TRANSCRIBE_NEMOTRON3_DIAR_PRESET"] = args.preset
+            env["TRANSCRIBE_NEMOTRON3_DIAR_PRESET"] = args.preset
             if args.threads > 0:
                 cmd += ["--threads", str(args.threads)]
             if args.batch_size > 1:

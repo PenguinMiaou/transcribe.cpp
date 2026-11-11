@@ -2,6 +2,17 @@
 
 Status: ported, Stage 4 complete pending tolerance review (Stage 1 intake 2026-09-24; Stage 2 oracle, Stage 3 BF16 GGUF, Stage 4 C++ 2026-09-25)
 
+API surface as merged: the family serves the DIARIZE role only
+(`transcribe_diarize_*`, `include/transcribe/diarize.h`), with the operating
+point on the `DIARIZE_RUN` slot (`TRANSCRIBE_EXT_KIND_NEMOTRON3_DIAR_DIARIZE`,
+`transcribe_nemotron3_diar_diarize_ext`). `transcribe_diarize_run` drives the
+streaming core over the whole recording. The push-audio (`transcribe_stream_*`)
+and `run_batch` paths described below were written against the earlier
+transcript-result speaker surface and are not part of the merged port; rows
+that cite them, `transcribe_nemotron3_diar_stream_unit`, or `--diar-preset`
+record the original port's validation, not the current tree. The current
+gate is `tests/nemotron3_diar_diarize_unit.cpp`.
+
 Intake signed off 2026-09-24: capability scope approved as drafted, with
 live push-audio diarization added as MUST PASS. Acceptance set = AMI Test
 MHM forced-alignment (primary) + NOTSOFAR1 Eval MHM (5-8 speaker

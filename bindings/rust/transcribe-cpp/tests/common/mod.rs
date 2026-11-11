@@ -128,6 +128,23 @@ pub fn smoke_sortformer_fixtures(test: &str) -> Option<(PathBuf, Vec<f32>)> {
     }
 }
 
+/// Nemotron-3-Diarization (DIARIZE role only) plus the two-speaker sample, or
+/// `None` (with a skip note) when either is absent.
+pub fn smoke_nemotron3_diar_fixtures(test: &str) -> Option<(PathBuf, Vec<f32>)> {
+    let model = family_model(
+        "TRANSCRIBE_SMOKE_NEMOTRON3_DIAR_MODEL",
+        "models/Nemotron-3-Diarization/Nemotron-3-Diarization-BF16.gguf",
+    );
+    let audio = repo_root().join("samples/sortformer-2spk-mix.wav");
+    match model {
+        Some(m) if audio.is_file() => Some((m, load_wav(&audio))),
+        _ => {
+            eprintln!("skip {test}: nemotron3_diar model/audio absent (set TRANSCRIBE_SMOKE_NEMOTRON3_DIAR_MODEL)");
+            None
+        }
+    }
+}
+
 /// VoxLingua107 ECAPA-TDNN (LANGID role only), or `None` (with a skip note).
 pub fn smoke_langid_model(test: &str) -> Option<PathBuf> {
     let model = family_model(

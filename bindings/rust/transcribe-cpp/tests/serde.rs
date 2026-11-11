@@ -31,10 +31,12 @@ fn plain_data_types_are_serializable() {
     assert_serde::<ParakeetBufferedStreamOptions>();
     assert_serde::<VoxtralRealtimeStreamOptions>();
     assert_serde::<SortformerPreset>();
+    assert_serde::<transcribe_cpp::Nemotron3DiarPreset>();
     assert_serde::<DiarizeOptions>();
     assert_serde::<DiarizeSessionOptions>();
     assert_serde::<DiarizeExtension>();
     assert_serde::<SortformerDiarizeOptions>();
+    assert_serde::<transcribe_cpp::Nemotron3DiarDiarizeOptions>();
     assert_serde::<LangIdSessionOptions>();
     assert_serde::<LangIdOptions>();
     assert_serde::<VadSessionOptions>();

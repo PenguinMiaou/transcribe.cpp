@@ -69,6 +69,49 @@ fn diarize_run_returns_turns_and_applies_preset() {
 }
 
 #[test]
+fn nemotron3_diar_diarize_run_and_preset() {
+    use transcribe_cpp::{Nemotron3DiarDiarizeOptions, Nemotron3DiarPreset};
+    let Some((model_path, pcm)) =
+        common::smoke_nemotron3_diar_fixtures("nemotron3_diar_diarize_run_and_preset")
+    else {
+        return;
+    };
+    // Exact segments are pinned in C (tests/nemotron3_diar_diarize_unit.cpp).
+    let model = Model::load(&model_path).unwrap();
+    assert_eq!(model.diarize_info().unwrap().max_speakers, 8);
+    let mut diarize = model.diarize_session().unwrap();
+    let speakers = |turns: Vec<transcribe_cpp::SpeakerSegment>| -> Vec<i32> {
+        let mut ids: Vec<i32> = turns
+            .iter()
+            .inspect(|s| assert!(s.t0_ms < s.t1_ms))
+            .map(|s| s.speaker_id)
+            .collect();
+        ids.sort_unstable();
+        ids.dedup();
+        ids
+    };
+    assert_eq!(
+        speakers(diarize.run(&pcm, &DiarizeOptions::default()).unwrap()),
+        [1, 2]
+    );
+    let low_latency = DiarizeOptions {
+        family: Some(DiarizeExtension::Nemotron3Diar(
+            Nemotron3DiarDiarizeOptions {
+                preset: Some(Nemotron3DiarPreset::LowLatency),
+            },
+        )),
+    };
+    assert_eq!(speakers(diarize.run(&pcm, &low_latency).unwrap()), [1, 2]);
+    // A foreign family's extension is rejected for this model.
+    let foreign = DiarizeOptions {
+        family: Some(DiarizeExtension::Sortformer(
+            SortformerDiarizeOptions::default(),
+        )),
+    };
+    assert!(diarize.run(&pcm, &foreign).is_err());
+}
+
+#[test]
 fn diarize_session_rejects_bad_input_and_cancels() {
     let Some((model_path, pcm)) =
         common::smoke_sortformer_fixtures("diarize_session_rejects_bad_input_and_cancels")
