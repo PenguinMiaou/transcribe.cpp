@@ -13,7 +13,7 @@ import ctypes as _c
 # Stable digest of the ABI surface below (structs, enums, macros, layout,
 # prototypes). A native provider package echoes this back so the API
 # package can reject an ABI-mismatched provider before dlopen.
-PUBLIC_HEADER_HASH = "f99ad4169374b8f3"
+PUBLIC_HEADER_HASH = "2bf21db79cc0658b"
 
 # === enum constants ===
 TRANSCRIBE_OK = 0
@@ -129,6 +129,11 @@ TRANSCRIBE_STREAM_FAILED = 3
 TRANSCRIBE_STREAM_COMMIT_AUTO = 0
 TRANSCRIBE_STREAM_COMMIT_ON_FINALIZE = 1
 TRANSCRIBE_STREAM_COMMIT_STABLE_PREFIX = 2
+TRANSCRIBE_NEMOTRON3_DIAR_PRESET_DEFAULT = 0
+TRANSCRIBE_NEMOTRON3_DIAR_PRESET_VERY_HIGH_LATENCY = 1
+TRANSCRIBE_NEMOTRON3_DIAR_PRESET_LOW_LATENCY = 2
+TRANSCRIBE_NEMOTRON3_DIAR_PRESET_VERY_LOW_LATENCY = 3
+TRANSCRIBE_NEMOTRON3_DIAR_PRESET_ULTRA_LOW_LATENCY = 4
 TRANSCRIBE_SORTFORMER_PRESET_DEFAULT = 0
 TRANSCRIBE_SORTFORMER_PRESET_VERY_HIGH_LATENCY = 1
 TRANSCRIBE_SORTFORMER_PRESET_HIGH_LATENCY = 2
@@ -145,6 +150,7 @@ TRANSCRIBE_BACKEND_MASK_OTHER = 2147483648
 TRANSCRIBE_BACKEND_MASK_ROCM = 16
 TRANSCRIBE_BACKEND_MASK_VULKAN = 4
 TRANSCRIBE_EXT_KIND_MOONSHINE_STREAMING_STREAM = 1414746957
+TRANSCRIBE_EXT_KIND_NEMOTRON3_DIAR_DIARIZE = 1380201294
 TRANSCRIBE_EXT_KIND_PARAKEET_BUFFERED_STREAM = 1396853584
 TRANSCRIBE_EXT_KIND_PARAKEET_STREAM = 1414744912
 TRANSCRIBE_EXT_KIND_SORTFORMER_DIARIZE = 1380206163
@@ -202,6 +208,8 @@ class transcribe_langid_candidate(_c.Structure):
     pass
 class transcribe_moonshine_streaming_stream_ext(_c.Structure):
     pass
+class transcribe_nemotron3_diar_diarize_ext(_c.Structure):
+    pass
 class transcribe_parakeet_stream_ext(_c.Structure):
     pass
 class transcribe_parakeet_buffered_stream_ext(_c.Structure):
@@ -250,6 +258,7 @@ transcribe_langid_params._fields_ = [("struct_size", _c.c_uint64), ("allowed", _
 transcribe_langid_result._fields_ = [("struct_size", _c.c_uint64), ("n_candidates", _c.c_int32), ("allowed_mass", _c.c_float)]
 transcribe_langid_candidate._fields_ = [("struct_size", _c.c_uint64), ("index", _c.c_int32), ("code", _c.c_char_p), ("name", _c.c_char_p), ("p", _c.c_float), ("logit", _c.c_float)]
 transcribe_moonshine_streaming_stream_ext._fields_ = [("ext", transcribe_ext), ("min_decode_interval_ms", _c.c_int32)]
+transcribe_nemotron3_diar_diarize_ext._fields_ = [("ext", transcribe_ext), ("preset", _c.c_int)]
 transcribe_parakeet_stream_ext._fields_ = [("ext", transcribe_ext), ("att_context_right", _c.c_int32)]
 transcribe_parakeet_buffered_stream_ext._fields_ = [("ext", transcribe_ext), ("left_ms", _c.c_int32), ("chunk_ms", _c.c_int32), ("right_ms", _c.c_int32)]
 transcribe_sortformer_diarize_ext._fields_ = [("ext", transcribe_ext), ("preset", _c.c_int)]
@@ -323,6 +332,7 @@ STRUCT_LAYOUT = {
     'transcribe_langid_result': {'size': 16, 'align': 8, 'offsets': {'struct_size': 0, 'n_candidates': 8, 'allowed_mass': 12}},
     'transcribe_langid_candidate': {'size': 40, 'align': 8, 'offsets': {'struct_size': 0, 'index': 8, 'code': 16, 'name': 24, 'p': 32, 'logit': 36}},
     'transcribe_moonshine_streaming_stream_ext': {'size': 24, 'align': 8, 'offsets': {'ext': 0, 'min_decode_interval_ms': 16}},
+    'transcribe_nemotron3_diar_diarize_ext': {'size': 24, 'align': 8, 'offsets': {'ext': 0, 'preset': 16}},
     'transcribe_parakeet_stream_ext': {'size': 24, 'align': 8, 'offsets': {'ext': 0, 'att_context_right': 16}},
     'transcribe_parakeet_buffered_stream_ext': {'size': 32, 'align': 8, 'offsets': {'ext': 0, 'left_ms': 16, 'chunk_ms': 20, 'right_ms': 24}},
     'transcribe_sortformer_diarize_ext': {'size': 24, 'align': 8, 'offsets': {'ext': 0, 'preset': 16}},
@@ -509,6 +519,8 @@ def configure(lib):
     lib.transcribe_n_tokens.argtypes = [_c.c_void_p]
     lib.transcribe_n_words.restype = _c.c_int
     lib.transcribe_n_words.argtypes = [_c.c_void_p]
+    lib.transcribe_nemotron3_diar_diarize_ext_init.restype = None
+    lib.transcribe_nemotron3_diar_diarize_ext_init.argtypes = [_c.POINTER(transcribe_nemotron3_diar_diarize_ext)]
     lib.transcribe_open.restype = _c.c_int
     lib.transcribe_open.argtypes = [_c.c_char_p, _c.POINTER(transcribe_model_load_params), _c.POINTER(transcribe_session_params), _c.POINTER(_c.c_void_p)]
     lib.transcribe_parakeet_buffered_stream_ext_init.restype = None

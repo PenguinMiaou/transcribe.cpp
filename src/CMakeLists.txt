@@ -77,6 +77,9 @@ add_library(transcribe
     arch/silero_vad/encoder.cpp
     arch/silero_vad/model.cpp
     arch/silero_vad/weights.cpp
+    arch/nemotron3_diar/model.cpp
+    arch/nemotron3_diar/stream.cpp
+    arch/nemotron3_diar/weights.cpp
     arch/voxtral/model.cpp
     arch/voxtral/capabilities.cpp
     arch/voxtral/weights.cpp
@@ -305,3 +308,11 @@ if(WIN32)
 endif()
 
 transcribe_apply_warnings(transcribe)
+
+# nemotron3_diar/stream.cpp reproduces torch's CPU float arithmetic bit-for-bit
+# (Sleef logf, ATen sum order) for the speaker-cache top-k; the compiler must not
+# fuse its separate multiplies/adds into FMAs. Clang also honors the in-source
+# `#pragma clang fp contract(off)`; GCC needs the flag.
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    set_source_files_properties(arch/nemotron3_diar/stream.cpp PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")
+endif()

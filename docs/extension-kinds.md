@@ -51,6 +51,7 @@ parameter; existing kinds keep their slot for life.
 | `0x54535256`   | `VRST` | `STREAM` | `TRANSCRIBE_EXT_KIND_VOXTRAL_REALTIME_STREAM`   | voxtral_realtime | `include/transcribe/voxtral_realtime.h` |
 | `0x54534653`   | `SFST` | `RUN`    | retired in 0.4 (was `TRANSCRIBE_EXT_KIND_SORTFORMER_STREAM`); never reuse | sortformer | - |
 | `0x52444653`   | `SFDR` | `DIARIZE_RUN` | `TRANSCRIBE_EXT_KIND_SORTFORMER_DIARIZE`   | sortformer   | `include/transcribe/sortformer.h` |
+| `0x5244334E`   | `N3DR` | `DIARIZE_RUN` | `TRANSCRIBE_EXT_KIND_NEMOTRON3_DIAR_DIARIZE` | nemotron3_diar | `include/transcribe/nemotron3_diar.h` |
 
 Empty rows reserved for future allocations:
 

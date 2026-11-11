@@ -135,6 +135,54 @@ pub struct SortformerDiarizeOptions {
     pub preset: Option<SortformerPreset>,
 }
 
+/// Nemotron-3-Diarization operating point (model-card latency / accuracy
+/// bundle). `Default` keeps the GGUF-shipped configuration (= `VeryHighLatency`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum Nemotron3DiarPreset {
+    #[default]
+    Default,
+    /// 30.4 s (chunk 340 + lookahead 40 frames); the offline point.
+    VeryHighLatency,
+    /// 1.04 s (chunk 9 + lookahead 4).
+    LowLatency,
+    /// 0.64 s (chunk 6 + lookahead 2).
+    VeryLowLatency,
+    /// 0.32 s (chunk 3 + lookahead 1). Most compute per audio second.
+    UltraLowLatency,
+}
+
+impl Nemotron3DiarPreset {
+    fn to_sys(self) -> sys::transcribe_nemotron3_diar_preset {
+        use sys::transcribe_nemotron3_diar_preset as P;
+        match self {
+            Nemotron3DiarPreset::Default => P::TRANSCRIBE_NEMOTRON3_DIAR_PRESET_DEFAULT,
+            Nemotron3DiarPreset::VeryHighLatency => {
+                P::TRANSCRIBE_NEMOTRON3_DIAR_PRESET_VERY_HIGH_LATENCY
+            }
+            Nemotron3DiarPreset::LowLatency => P::TRANSCRIBE_NEMOTRON3_DIAR_PRESET_LOW_LATENCY,
+            Nemotron3DiarPreset::VeryLowLatency => {
+                P::TRANSCRIBE_NEMOTRON3_DIAR_PRESET_VERY_LOW_LATENCY
+            }
+            Nemotron3DiarPreset::UltraLowLatency => {
+                P::TRANSCRIBE_NEMOTRON3_DIAR_PRESET_ULTRA_LOW_LATENCY
+            }
+        }
+    }
+}
+
+/// Nemotron-3-Diarization diarize-extension knobs (diarize-run slot; up to 8
+/// speakers). `None` keeps the family default (the GGUF-shipped cfg).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Serialize, serde::Deserialize),
+    serde(default)
+)]
+pub struct Nemotron3DiarDiarizeOptions {
+    pub preset: Option<Nemotron3DiarPreset>,
+}
+
 /// A family extension for the diarize-run slot
 /// ([`DiarizeSession::run`](crate::DiarizeSession::run)).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -142,11 +190,13 @@ pub struct SortformerDiarizeOptions {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum DiarizeExtension {
     Sortformer(SortformerDiarizeOptions),
+    Nemotron3Diar(Nemotron3DiarDiarizeOptions),
 }
 
 /// Owns a materialized diarize-slot C extension struct.
 pub(crate) enum DiarizeExtRaw {
     Sortformer(Box<sys::transcribe_sortformer_diarize_ext>),
+    Nemotron3Diar(Box<sys::transcribe_nemotron3_diar_diarize_ext>),
 }
 
 impl DiarizeExtRaw {
@@ -154,6 +204,10 @@ impl DiarizeExtRaw {
         match self {
             DiarizeExtRaw::Sortformer(e) => {
                 (&**e) as *const sys::transcribe_sortformer_diarize_ext
+                    as *const sys::transcribe_ext
+            }
+            DiarizeExtRaw::Nemotron3Diar(e) => {
+                (&**e) as *const sys::transcribe_nemotron3_diar_diarize_ext
                     as *const sys::transcribe_ext
             }
         }
@@ -168,6 +222,13 @@ impl DiarizeExtension {
                 unsafe { sys::transcribe_sortformer_diarize_ext_init(&mut e) };
                 set(&mut e.preset, o.preset.map(SortformerPreset::to_sys));
                 DiarizeExtRaw::Sortformer(Box::new(e))
+            }
+            DiarizeExtension::Nemotron3Diar(o) => {
+                let mut e: sys::transcribe_nemotron3_diar_diarize_ext =
+                    unsafe { std::mem::zeroed() };
+                unsafe { sys::transcribe_nemotron3_diar_diarize_ext_init(&mut e) };
+                set(&mut e.preset, o.preset.map(Nemotron3DiarPreset::to_sys));
+                DiarizeExtRaw::Nemotron3Diar(Box::new(e))
             }
         }
     }

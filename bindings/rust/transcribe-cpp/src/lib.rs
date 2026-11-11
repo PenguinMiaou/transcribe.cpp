@@ -71,9 +71,9 @@ pub use cancel::CancelToken;
 pub use diarize::{DiarizeInfo, DiarizeOptions, DiarizeSession, DiarizeSessionOptions};
 pub use error::{Error, ErrorKind, ErrorReport, Result};
 pub use family::{
-    DiarizeExtension, MoonshineStreamingOptions, ParakeetBufferedStreamOptions,
-    ParakeetStreamOptions, RunExtension, SortformerDiarizeOptions, SortformerPreset,
-    StreamExtension, VoxtralRealtimeStreamOptions, WhisperRunOptions,
+    DiarizeExtension, MoonshineStreamingOptions, Nemotron3DiarDiarizeOptions, Nemotron3DiarPreset,
+    ParakeetBufferedStreamOptions, ParakeetStreamOptions, RunExtension, SortformerDiarizeOptions,
+    SortformerPreset, StreamExtension, VoxtralRealtimeStreamOptions, WhisperRunOptions,
 };
 pub use langid::{
     LangIdCandidate, LangIdInfo, LangIdOptions, LangIdResult, LangIdSession, LangIdSessionOptions,

@@ -17,6 +17,7 @@
 #include "transcribe/diarize.h"
 #include "transcribe/langid.h"
 #include "transcribe/moonshine_streaming.h"
+#include "transcribe/nemotron3_diar.h"
 #include "transcribe/parakeet.h"
 #include "transcribe/sortformer.h"
 #include "transcribe/vad.h"

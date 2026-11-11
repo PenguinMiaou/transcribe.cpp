@@ -98,17 +98,27 @@ namespace silero_vad {
 extern const Arch arch;
 }
 
+namespace nemotron3_diar {
+extern const Arch arch;
+}
+
 const Arch * find_arch(const char * name) {
     if (name == nullptr) {
         return nullptr;
     }
 
     static const Arch * const k_archs[] = {
-        &parakeet::arch,         &cohere::arch,      &canary::arch,     &qwen3_asr::arch,    &voxtral::arch,
-        &voxtral_realtime::arch, &canary_qwen::arch, &whisper::arch,    &moonshine::arch,    &moonshine_streaming::arch,
-        &sensevoice::arch,       &funasr_nano::arch, &gigaam::arch,     &granite::arch,      &granite_nar::arch,
-        &medasr::arch,           &moss::arch,        &sortformer::arch, &granite5_ctc::arch, &ecapa_tdnn::arch,
-        &silero_vad::arch,
+        &parakeet::arch,     &cohere::arch,
+        &canary::arch,       &qwen3_asr::arch,
+        &voxtral::arch,      &voxtral_realtime::arch,
+        &canary_qwen::arch,  &whisper::arch,
+        &moonshine::arch,    &moonshine_streaming::arch,
+        &sensevoice::arch,   &funasr_nano::arch,
+        &gigaam::arch,       &granite::arch,
+        &granite_nar::arch,  &medasr::arch,
+        &moss::arch,         &sortformer::arch,
+        &granite5_ctc::arch, &ecapa_tdnn::arch,
+        &silero_vad::arch,   &nemotron3_diar::arch,
     };
     constexpr size_t k_n = sizeof(k_archs) / sizeof(k_archs[0]);
 
