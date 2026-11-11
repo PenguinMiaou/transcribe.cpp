@@ -24,9 +24,8 @@ Dropped (never used by the inference forward):
     sortformer_modules.hidden_to_spks.*  legacy 384-in head, never called
     sortformer_modules.activity_head.*   training-only auxiliary head
 
-Reference dtype is BF16: the .nemo state_dict is all bfloat16. NeMo's
-restore_from hands back fp32 tensors, so every tensor is checked to be
-BF16-exact before it is written. Storage follows reference_dtype_for:
+Reference dtype is BF16: the .nemo state_dict is all bfloat16, and every
+tensor is checked to be BF16-exact before it is written. Storage follows reference_dtype_for:
   - Linear weights                         -> BF16 (lossless)
   - biases, LayerNorms, sil_emb, frontend  -> F32  (lossless upcast)
   - diar.upsample.conv.weight              -> F16  (the loader has no BF16
@@ -40,7 +39,10 @@ The fused attention projection is kept fused: enc.blocks.{i}.attn.qkv.weight
 is [3*d_model, d_model] in torch order, rows = [q | k | v], each block
 laid out head-major (NeMo views it as (T, 3, H, D)).
 
-Usage (via the Nemotron-3-Diarization reference env, which has NeMo Speech):
+The .nemo is read directly (plain-YAML config, weights_only checkpoint
+load); NeMo is not needed to convert. Needs torch, omegaconf, gguf, numpy.
+
+Usage:
     uv run --project scripts/envs/nemotron3_diar \
       scripts/convert-nemotron3_diar.py nvidia/Nemotron-3-Diarization \
       --repo-id nvidia/Nemotron-3-Diarization \
@@ -150,16 +152,40 @@ def _resolve_nemo(model_spec: str, revision: str | None) -> str:
     return hf_hub_download(model_spec, "Nemotron-3-Diarization.nemo", revision=revision)
 
 
-def convert(model_spec: str, out_path: Path, repo_id: str | None = None, revision: str | None = None) -> None:
-    from omegaconf import OmegaConf
-    from nemo.collections.asr.models import SortformerEncLabelModel
+def _read_nemo(nemo_path: str) -> tuple[dict, dict]:
+    """Read (config, state_dict) straight from the .nemo tar.
 
+    The archive holds model_config.yaml and model_weights.ckpt. The config is
+    parsed as plain YAML data (its `_target_` entries are never instantiated)
+    and the checkpoint is unpickled with weights_only=True, so converting does
+    not execute anything shipped in the archive and does not need NeMo.
+    """
+    import io
+    import tarfile
+
+    import torch
+    from omegaconf import OmegaConf
+
+    members: dict[str, bytes] = {}
+    with tarfile.open(nemo_path, "r:*") as tar:
+        for m in tar:
+            name = m.name.lstrip("./")
+            if m.isfile() and name in ("model_config.yaml", "model_weights.ckpt"):
+                members[name] = tar.extractfile(m).read()
+    missing = {"model_config.yaml", "model_weights.ckpt"} - set(members)
+    if missing:
+        raise ValueError(f"{nemo_path}: missing {sorted(missing)}")
+    cfg = OmegaConf.to_container(OmegaConf.create(members["model_config.yaml"].decode("utf-8")), resolve=True)
+    sd = torch.load(io.BytesIO(members["model_weights.ckpt"]), map_location="cpu", weights_only=True)
+    if isinstance(sd, dict) and "state_dict" in sd:
+        sd = sd["state_dict"]
+    return cfg, sd
+
+
+def convert(model_spec: str, out_path: Path, repo_id: str | None = None, revision: str | None = None) -> None:
     print(f"Output dtype: {REFERENCE_DTYPE_LABEL} (source/reference dtype)")
     nemo_path = _resolve_nemo(model_spec, revision)
-    model = SortformerEncLabelModel.restore_from(restore_path=nemo_path, map_location="cpu", strict=False)
-    model.eval()
-    cfg = OmegaConf.to_container(model.cfg, resolve=True)
-    sd = model.state_dict()
+    cfg, sd = _read_nemo(nemo_path)
     sd_keys = set(sd)
 
     enc = cfg["encoder"]
