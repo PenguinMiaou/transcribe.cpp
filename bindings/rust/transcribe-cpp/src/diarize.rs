@@ -175,6 +175,24 @@ impl DiarizeSession {
         unsafe { sys::transcribe_diarize_stream_decided_ms(self.ptr) }
     }
 
+    /// Segments over all the audio fed so far: the decided part followed by a
+    /// provisional tail, computed as [`stream_finish`](Self::stream_finish)
+    /// would if the recording ended now. Everything from
+    /// [`stream_decided_ms`](Self::stream_decided_ms) on may change with later
+    /// audio. The stream is left exactly as it was, so later feeds and the
+    /// final result are the same with or without peeks; a failed peek does not
+    /// end it. Each call recomputes the whole tail.
+    pub fn stream_peek(&mut self) -> Result<Vec<SpeakerSegment>> {
+        let status = self.model.with_compute(
+            Some(
+                "a stream is active on this model; finish or drop it before diarize stream_peek()",
+            ),
+            |_| unsafe { sys::transcribe_diarize_stream_peek(self.ptr) },
+        )?;
+        check(status, "diarize stream peek")?;
+        Ok(self.segments())
+    }
+
     /// End the recording: process the rest of the fed audio and return the
     /// final segments.
     pub fn stream_finish(&mut self) -> Result<Vec<SpeakerSegment>> {

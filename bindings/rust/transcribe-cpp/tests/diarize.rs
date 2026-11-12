@@ -146,6 +146,10 @@ fn nemotron3_diar_stream_feed_in_pieces_equals_run() {
         diarize.stream_finish(),
         Err(Error::InvalidArgument(_))
     ));
+    assert!(matches!(
+        diarize.stream_peek(),
+        Err(Error::InvalidArgument(_))
+    ));
 
     for options in [DiarizeOptions::default(), low_latency] {
         let whole = rows(&diarize.run(&pcm, &options).unwrap());
@@ -170,6 +174,20 @@ fn nemotron3_diar_stream_feed_in_pieces_equals_run() {
                     .map(|r| (r.0, r.1.min(decided), r.2))
                     .collect();
                 assert_eq!(so_far, cut, "decided {decided} ms after {pos} samples");
+                // A peek covers everything fed, agrees with the decided part,
+                // and leaves the stream where it was.
+                if k % 2 == 0 {
+                    let seen = rows(&diarize.stream_peek().unwrap());
+                    assert_eq!(diarize.stream_decided_ms(), decided);
+                    assert!(seen.iter().all(|r| r.1 <= (pos / 160 * 10) as i64));
+                    let closed = |v: &[(i64, i64, i32)]| -> Vec<(i64, i64, i32)> {
+                        v.iter().filter(|r| r.1 < decided).cloned().collect()
+                    };
+                    assert_eq!(closed(&seen), closed(&cut));
+                    if pos == pcm.len() {
+                        assert_eq!(seen, whole);
+                    }
+                }
             }
             assert_eq!(rows(&diarize.stream_finish().unwrap()), whole);
             assert_eq!(diarize.stream_decided_ms(), audio_ms / 10 * 10);
