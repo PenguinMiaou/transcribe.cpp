@@ -24,7 +24,9 @@ the whole-recording run does. Frame probabilities are bit-identical to
 `tests/nemotron3_diar_diarize_stream_unit.cpp`; dispatcher call order in
 `tests/diarize_dispatch_unit.cpp`). Between feeds the session keeps the
 speaker cache / FIFO, the unconsumed mel, under 1000 PCM samples and the
-10 ms probabilities.
+10 ms probabilities. `transcribe_diarize_stream_peek` runs the tail as finish
+would on a copy of that state (the result of a whole run on the audio fed so
+far) and leaves the stream as it was; each peek recomputes the whole tail.
 
 Intake signed off 2026-09-24: capability scope approved as drafted, with
 live push-audio diarization added as MUST PASS. Acceptance set = AMI Test

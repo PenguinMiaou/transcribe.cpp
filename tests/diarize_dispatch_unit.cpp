@@ -110,12 +110,29 @@ transcribe_status fake_stream_finish(transcribe_diarize_session *, transcribe::D
     return TRANSCRIBE_OK;
 }
 
+// Peek of the fake: the frames so far plus one provisional frame for speaker 2.
+int g_peek_calls = 0;
+
+transcribe_status fake_stream_peek(transcribe_diarize_session *, transcribe::DiarizeProbs & out) {
+    ++g_peek_calls;
+    if (g_stream_status != TRANSCRIBE_OK) {
+        return g_stream_status;
+    }
+    out.probs = g_stream_probs;
+    out.probs.push_back(0.0f);
+    out.probs.push_back(0.8f);
+    out.n_frames   = static_cast<int>(out.probs.size() / 2);
+    out.n_speakers = 2;
+    out.frame_ms   = 80.0;
+    return TRANSCRIBE_OK;
+}
+
 const transcribe::DiarizeOps k_ops = {
-    fake_max_speakers, fake_new_session, fake_run_validate, fake_run, nullptr, nullptr, nullptr,
+    fake_max_speakers, fake_new_session, fake_run_validate, fake_run, nullptr, nullptr, nullptr, nullptr,
 };
 const transcribe::DiarizeOps k_stream_ops = {
     fake_max_speakers, fake_new_session, fake_run_validate,  fake_run,
-    fake_stream_begin, fake_stream_feed, fake_stream_finish,
+    fake_stream_begin, fake_stream_feed, fake_stream_finish, fake_stream_peek,
 };
 
 const transcribe::Arch k_arch = {
@@ -277,6 +294,7 @@ void test_stream_unsupported() {
     CHECK(f.run() == TRANSCRIBE_OK);
     CHECK(transcribe_diarize_stream_begin(f.session, nullptr) == TRANSCRIBE_ERR_NOT_IMPLEMENTED);
     CHECK(transcribe_diarize_stream_feed(f.session, f.pcm.data(), 1600) == TRANSCRIBE_ERR_NOT_IMPLEMENTED);
+    CHECK(transcribe_diarize_stream_peek(f.session) == TRANSCRIBE_ERR_NOT_IMPLEMENTED);
     CHECK(transcribe_diarize_stream_finish(f.session) == TRANSCRIBE_ERR_NOT_IMPLEMENTED);
     CHECK(transcribe_diarize_n_segments(f.session) == 2);
     CHECK(transcribe_diarize_stream_decided_ms(f.session) == 0);
@@ -291,9 +309,11 @@ void test_stream_calls() {
     CHECK(transcribe_diarize_stream_begin(nullptr, nullptr) == TRANSCRIBE_ERR_INVALID_ARG);
     CHECK(transcribe_diarize_stream_feed(nullptr, f.pcm.data(), 1600) == TRANSCRIBE_ERR_INVALID_ARG);
     CHECK(transcribe_diarize_stream_finish(nullptr) == TRANSCRIBE_ERR_INVALID_ARG);
+    CHECK(transcribe_diarize_stream_peek(nullptr) == TRANSCRIBE_ERR_INVALID_ARG);
 
-    // No stream yet: feed / finish are refused and the run result stays.
+    // No stream yet: feed / peek / finish are refused and the run result stays.
     CHECK(f.run() == TRANSCRIBE_OK);
+    CHECK(transcribe_diarize_stream_peek(f.session) == TRANSCRIBE_ERR_INVALID_ARG);
     CHECK(transcribe_diarize_stream_feed(f.session, f.pcm.data(), 1600) == TRANSCRIBE_ERR_INVALID_ARG);
     CHECK(transcribe_diarize_stream_finish(f.session) == TRANSCRIBE_ERR_INVALID_ARG);
     CHECK(transcribe_diarize_n_segments(f.session) == 2);
@@ -339,6 +359,22 @@ void test_stream_calls() {
     CHECK(transcribe_diarize_get_segment(f.session, 1, &row) == TRANSCRIBE_OK);
     CHECK(row.speaker_id == 1 && row.t0_ms == 160 && row.t1_ms == 240);
 
+    // peek: decided frames plus the provisional one; the decided end stays,
+    // a failed peek keeps the segments, and the next feed is back on the
+    // decided frames.
+    CHECK(transcribe_diarize_stream_peek(f.session) == TRANSCRIBE_OK);
+    CHECK(transcribe_diarize_n_segments(f.session) == 3);
+    CHECK(transcribe_diarize_get_segment(f.session, 2, &row) == TRANSCRIBE_OK);
+    CHECK(row.speaker_id == 2 && row.t0_ms == 240 && row.t1_ms == 320);
+    CHECK(transcribe_diarize_stream_decided_ms(f.session) == 240);
+    g_stream_status = TRANSCRIBE_ERR_ABORTED;
+    CHECK(transcribe_diarize_stream_peek(f.session) == TRANSCRIBE_ERR_ABORTED);
+    CHECK(transcribe_diarize_n_segments(f.session) == 3);
+    g_stream_status = TRANSCRIBE_OK;
+    CHECK(transcribe_diarize_stream_feed(f.session, f.pcm.data(), 100) == TRANSCRIBE_OK);  // still active
+    CHECK(transcribe_diarize_n_segments(f.session) == 2);
+    CHECK(transcribe_diarize_stream_decided_ms(f.session) == 240);
+
     CHECK(transcribe_diarize_stream_finish(f.session) == TRANSCRIBE_OK);
     CHECK(transcribe_diarize_stream_decided_ms(f.session) == 320);
     CHECK(transcribe_diarize_n_segments(f.session) == 3);
@@ -347,6 +383,7 @@ void test_stream_calls() {
     // The stream is over; its result stays readable.
     CHECK(transcribe_diarize_stream_feed(f.session, f.pcm.data(), 1600) == TRANSCRIBE_ERR_INVALID_ARG);
     CHECK(transcribe_diarize_stream_finish(f.session) == TRANSCRIBE_ERR_INVALID_ARG);
+    CHECK(transcribe_diarize_stream_peek(f.session) == TRANSCRIBE_ERR_INVALID_ARG);
     CHECK(transcribe_diarize_n_segments(f.session) == 3);
 
     // A run ends a stream in progress.

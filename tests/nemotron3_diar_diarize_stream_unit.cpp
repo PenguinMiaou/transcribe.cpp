@@ -5,13 +5,17 @@
 // Oracle: transcribe_diarize_run on the whole recording. For every split the
 // fed stream must give the same frame probabilities (compared bit for bit
 // through the diar.probs debug dump) and the same segments, and before
-// finish the decided frames must be a prefix of the whole-run frames.
+// finish the decided frames must be a prefix of the whole-run frames. With
+// peeks after every feed all of that must still hold, and a peek must give
+// the segments of a whole run on the audio fed so far.
 //
 // Optional environment:
 //   TRANSCRIBE_NEMOTRON3_DIAR_STREAM_WAV      another 16 kHz mono recording;
 //                                             runs only the fixed-piece
 //                                             comparison and prints numbers
 //   TRANSCRIBE_NEMOTRON3_DIAR_STREAM_PIECE_MS piece length for it (20000)
+//   TRANSCRIBE_NEMOTRON3_DIAR_STREAM_PRESET   "low_latency" for it
+//   TRANSCRIBE_NEMOTRON3_DIAR_STREAM_PEEK     "1": peek after every feed of it
 //   TRANSCRIBE_NEMOTRON3_DIAR_STREAM_BACKEND  "auto" for the default backend
 //                                             (CPU otherwise)
 
@@ -97,8 +101,8 @@ std::vector<float> read_probs() {
     return v;
 }
 
-transcribe_diarize_params params_for(transcribe_nemotron3_diar_diarize_ext &  ext,
-                                     transcribe_nemotron3_diar_preset         preset) {
+transcribe_diarize_params params_for(transcribe_nemotron3_diar_diarize_ext & ext,
+                                     transcribe_nemotron3_diar_preset        preset) {
     transcribe_nemotron3_diar_diarize_ext_init(&ext);
     ext.preset = preset;
     transcribe_diarize_params dp;
@@ -113,7 +117,9 @@ struct Whole {
     double             seconds = 0.0;
 };
 
-Whole run_whole(transcribe_diarize_session * s, const std::vector<float> & pcm, transcribe_nemotron3_diar_preset preset) {
+Whole run_whole(transcribe_diarize_session *     s,
+                const std::vector<float> &       pcm,
+                transcribe_nemotron3_diar_preset preset) {
     transcribe_nemotron3_diar_diarize_ext ext;
     const transcribe_diarize_params       dp = params_for(ext, preset);
     Whole                                 w;
@@ -128,16 +134,35 @@ Whole run_whole(transcribe_diarize_session * s, const std::vector<float> & pcm, 
 }
 
 struct StreamStats {
-    float  max_abs_diff = 0.0f;
-    bool   bit_identical = false;
-    bool   same_rows     = false;
-    int    n_feeds       = 0;
-    double feed_s_sum = 0.0, feed_s_max = 0.0, finish_s = 0.0;
+    float   max_abs_diff  = 0.0f;
+    bool    bit_identical = false;
+    bool    same_rows     = false;
+    int     n_feeds       = 0;
+    double  feed_s_sum = 0.0, feed_s_max = 0.0, finish_s = 0.0;
     // audio fed minus decided end after a feed, over the feeds from the
     // first decision on
     int64_t lag_min = std::numeric_limits<int64_t>::max(), lag_max = 0, lag_sum = 0;
     int     lag_n   = 0;
+    // peeks: time, and 10 ms frames of the provisional tail whose set of
+    // active speakers differs from the final result
+    int     n_peeks = 0, peeks_differing = 0;
+    double  peek_s_sum = 0.0, peek_s_max = 0.0;
+    long    tail_frames = 0, tail_frames_differing = 0;
 };
+
+enum class Peek { None, Every, EveryVsPrefixRun };
+
+// Active-speaker bit mask per 10 ms frame for frames [0, n).
+std::vector<unsigned> masks_of(const std::vector<Row> & rows, size_t n) {
+    std::vector<unsigned> m(n, 0u);
+    for (const Row & r : rows) {
+        for (size_t t = static_cast<size_t>(r.t0 / k_frame_ms); t < std::min(n, static_cast<size_t>(r.t1 / k_frame_ms));
+             ++t) {
+            m[t] |= 1u << (r.spk - 1);
+        }
+    }
+    return m;
+}
 
 // Feed `pcm` in the given piece sizes (cycled), checking the decided prefix
 // against the whole run after every feed that moved it.
@@ -145,15 +170,18 @@ StreamStats run_stream(transcribe_diarize_session *     s,
                        const std::vector<float> &       pcm,
                        transcribe_nemotron3_diar_preset preset,
                        const std::vector<size_t> &      pieces,
-                       const Whole &                    whole) {
+                       const Whole &                    whole,
+                       Peek                             peek       = Peek::None,
+                       transcribe_diarize_session *     prefix_dia = nullptr) {
     transcribe_nemotron3_diar_diarize_ext ext;
     const transcribe_diarize_params       dp = params_for(ext, preset);
     StreamStats                           st;
     CHECK(transcribe_diarize_stream_begin(s, &dp) == TRANSCRIBE_OK);
     CHECK(transcribe_diarize_n_segments(s) == 0 && transcribe_diarize_stream_decided_ms(s) == 0);
 
-    int64_t decided = 0;
-    size_t  pos     = 0;
+    const std::vector<unsigned> final_masks = masks_of(whole.rows, whole.probs.size() / k_spk);
+    int64_t                     decided     = 0;
+    size_t                      pos         = 0;
     for (size_t k = 0; pos < pcm.size(); ++k) {
         const size_t n  = std::min(pieces[k % pieces.size()], pcm.size() - pos);
         const auto   t0 = std::chrono::steady_clock::now();
@@ -172,9 +200,9 @@ StreamStats run_stream(transcribe_diarize_session *     s,
         CHECK(now >= decided && now % k_frame_ms == 0);
         CHECK(now <= static_cast<int64_t>(pos / 16));
         if (now != decided) {
-            decided                  = now;
-            const size_t       n_dec = static_cast<size_t>(decided / k_frame_ms);
-            const std::vector<float> got = read_probs();
+            decided                        = now;
+            const size_t             n_dec = static_cast<size_t>(decided / k_frame_ms);
+            const std::vector<float> got   = read_probs();
             CHECK(got.size() == n_dec * k_spk && got.size() <= whole.probs.size());
             CHECK(got.size() <= whole.probs.size() &&
                   std::memcmp(got.data(), whole.probs.data(), got.size() * sizeof(float)) == 0);
@@ -186,6 +214,46 @@ StreamStats run_stream(transcribe_diarize_session *     s,
             st.lag_max        = std::max(st.lag_max, lag);
             st.lag_sum += lag;
             ++st.lag_n;
+        }
+
+        if (peek != Peek::None) {
+            const auto   p0 = std::chrono::steady_clock::now();
+            const auto   pr = transcribe_diarize_stream_peek(s);
+            const double pt = std::chrono::duration<double>(std::chrono::steady_clock::now() - p0).count();
+            CHECK(pr == TRANSCRIBE_OK);
+            ++st.n_peeks;
+            st.peek_s_sum += pt;
+            st.peek_s_max = std::max(st.peek_s_max, pt);
+            CHECK(transcribe_diarize_stream_decided_ms(s) == decided);
+            const std::vector<Row>      seen     = session_rows(s);
+            const size_t                n_dec    = static_cast<size_t>(decided / k_frame_ms);
+            const size_t                n_fed    = pos / 160;
+            // The decided part of the peek is the decided result ...
+            const std::vector<unsigned> got      = masks_of(seen, n_fed);
+            bool                        dec_same = true;
+            for (size_t t = 0; t < n_dec; ++t) {
+                dec_same = dec_same && got[t] == final_masks[t];
+            }
+            CHECK(dec_same);
+            for (const Row & r : seen) {
+                CHECK(r.t1 <= static_cast<int64_t>(n_fed) * k_frame_ms);
+            }
+            // ... and the tail is provisional: count where it ends up different.
+            long differing = 0;
+            for (size_t t = n_dec; t < n_fed; ++t) {
+                differing += got[t] != final_masks[t] ? 1 : 0;
+            }
+            st.tail_frames += static_cast<long>(n_fed - n_dec);
+            st.tail_frames_differing += differing;
+            st.peeks_differing += differing > 0 ? 1 : 0;
+            // A peek is a whole run on the audio fed so far.
+            if (peek == Peek::EveryVsPrefixRun && pos >= 160) {
+                CHECK(transcribe_diarize_run(prefix_dia, pcm.data(), static_cast<int>(pos), &dp) == TRANSCRIBE_OK);
+                CHECK(session_rows(prefix_dia) == seen);
+            }
+            if (pos == pcm.size()) {
+                CHECK(seen == whole.rows);
+            }
         }
     }
 
@@ -209,13 +277,22 @@ StreamStats run_stream(transcribe_diarize_session *     s,
 }
 
 void report(const char * label, const StreamStats & st) {
-    std::printf("%s: feeds=%d max_abs_diff=%g bit_identical=%d segments_identical=%d feed_s mean=%.3f max=%.3f "
-                "finish_s=%.3f",
-                label, st.n_feeds, static_cast<double>(st.max_abs_diff), st.bit_identical ? 1 : 0,
-                st.same_rows ? 1 : 0, st.n_feeds > 0 ? st.feed_s_sum / st.n_feeds : 0.0, st.feed_s_max, st.finish_s);
+    std::printf(
+        "%s: feeds=%d max_abs_diff=%g bit_identical=%d segments_identical=%d feed_s mean=%.3f max=%.3f "
+        "finish_s=%.3f",
+        label, st.n_feeds, static_cast<double>(st.max_abs_diff), st.bit_identical ? 1 : 0, st.same_rows ? 1 : 0,
+        st.n_feeds > 0 ? st.feed_s_sum / st.n_feeds : 0.0, st.feed_s_max, st.finish_s);
     if (st.lag_n > 0) {
         std::printf(" lag_ms min=%lld mean=%lld max=%lld", static_cast<long long>(st.lag_min),
                     static_cast<long long>(st.lag_sum / st.lag_n), static_cast<long long>(st.lag_max));
+    }
+    if (st.n_peeks > 0) {
+        std::printf(" | peeks=%d peek_s mean=%.3f max=%.3f tail_frames=%ld differing=%ld (%.2f%%) peeks_with_diff=%d",
+                    st.n_peeks, st.peek_s_sum / st.n_peeks, st.peek_s_max, st.tail_frames, st.tail_frames_differing,
+                    st.tail_frames > 0 ?
+                        100.0 * static_cast<double>(st.tail_frames_differing) / static_cast<double>(st.tail_frames) :
+                        0.0,
+                    st.peeks_differing);
     }
     std::printf("\n");
 }
@@ -248,8 +325,9 @@ int main() {
     // dumper latches its directory on the first run of the process.
     {
         std::error_code ec;
-        const auto      dir = std::filesystem::temp_directory_path(ec) /
-                              ("transcribe_n3d_stream_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+        const auto      dir =
+            std::filesystem::temp_directory_path(ec) /
+            ("transcribe_n3d_stream_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
         std::filesystem::create_directories(dir, ec);
         if (ec) {
             std::fprintf(stderr, "nemotron3_diar_diarize_stream_unit: no temp dir; skipping.\n");
@@ -261,9 +339,9 @@ int main() {
 
     transcribe_model_load_params mp;
     transcribe_model_load_params_init(&mp);
-    const char * backend     = std::getenv("TRANSCRIBE_NEMOTRON3_DIAR_STREAM_BACKEND");
-    mp.backend               = (backend != nullptr && std::string(backend) == "auto") ? TRANSCRIBE_BACKEND_AUTO :
-                                                                                        TRANSCRIBE_BACKEND_CPU;
+    const char * backend = std::getenv("TRANSCRIBE_NEMOTRON3_DIAR_STREAM_BACKEND");
+    mp.backend =
+        (backend != nullptr && std::string(backend) == "auto") ? TRANSCRIBE_BACKEND_AUTO : TRANSCRIBE_BACKEND_CPU;
     transcribe_model * model = nullptr;
     if (transcribe_model_load_file(path, &mp, &model) != TRANSCRIBE_OK) {
         std::fprintf(stderr, "FAIL: model load\n");
@@ -271,22 +349,25 @@ int main() {
     }
     transcribe_diarize_session * dia = nullptr;
     CHECK(transcribe_diarize_session_init(model, nullptr, &dia) == TRANSCRIBE_OK);
-    std::printf("backend=%s audio_s=%.2f\n", transcribe_model_backend(model), static_cast<double>(pcm.size()) / 16000.0);
+    std::printf("backend=%s audio_s=%.2f\n", transcribe_model_backend(model),
+                static_cast<double>(pcm.size()) / 16000.0);
 
     const auto DEF = TRANSCRIBE_NEMOTRON3_DIAR_PRESET_DEFAULT;
     const auto LOW = TRANSCRIBE_NEMOTRON3_DIAR_PRESET_LOW_LATENCY;
 
     if (stress) {
-        const char * piece_env = std::getenv("TRANSCRIBE_NEMOTRON3_DIAR_STREAM_PIECE_MS");
-        const long   piece_ms  = piece_env != nullptr && piece_env[0] != '\0' ? std::atol(piece_env) : 20000;
+        const char * piece_env  = std::getenv("TRANSCRIBE_NEMOTRON3_DIAR_STREAM_PIECE_MS");
+        const long   piece_ms   = piece_env != nullptr && piece_env[0] != '\0' ? std::atol(piece_env) : 20000;
         const char * preset_env = std::getenv("TRANSCRIBE_NEMOTRON3_DIAR_STREAM_PRESET");
         const auto   preset     = (preset_env != nullptr && std::string(preset_env) == "low_latency") ? LOW : DEF;
-        const Whole  whole     = run_whole(dia, pcm, preset);
+        const Whole  whole      = run_whole(dia, pcm, preset);
         std::printf("whole run: %.3f s, %zu frames, %zu segments\n", whole.seconds, whole.probs.size() / k_spk,
                     whole.rows.size());
         char label[64];
         std::snprintf(label, sizeof(label), "%ld ms pieces", piece_ms);
-        report(label, run_stream(dia, pcm, preset, { static_cast<size_t>(std::max(1L, piece_ms)) * 16 }, whole));
+        const char * peek_env = std::getenv("TRANSCRIBE_NEMOTRON3_DIAR_STREAM_PEEK");
+        const Peek   peek     = (peek_env != nullptr && std::string(peek_env) == "1") ? Peek::Every : Peek::None;
+        report(label, run_stream(dia, pcm, preset, { static_cast<size_t>(std::max(1L, piece_ms)) * 16 }, whole, peek));
     } else {
         // 1. Default operating point: 20 s, 1 s and uneven pieces (hop
         //    multiples, off-hop sizes, single samples, a long one).
@@ -296,7 +377,8 @@ int main() {
         report("20 s pieces", run_stream(dia, pcm, DEF, { 320000 }, whole));
         report("1 s pieces", run_stream(dia, pcm, DEF, { 16000 }, whole));
         report("uneven pieces",
-               run_stream(dia, pcm, DEF, { 1, 159, 160, 161, 255, 257, 7919, 48000, 3, 100003, 4801, 512, 640000 }, whole));
+               run_stream(dia, pcm, DEF, { 1, 159, 160, 161, 255, 257, 7919, 48000, 3, 100003, 4801, 512, 640000 },
+                          whole));
         // The whole recording in one feed, and a run after a stream.
         report("one piece", run_stream(dia, pcm, DEF, { pcm.size() }, whole));
         CHECK(run_whole(dia, pcm, DEF).rows == whole.rows);
@@ -307,13 +389,27 @@ int main() {
         report("low_latency, 1 s pieces", run_stream(dia, pcm, LOW, { 16000 }, whole_low));
         report("low_latency, uneven pieces", run_stream(dia, pcm, LOW, { 1601, 7919, 23, 33333, 160 }, whole_low));
 
-        // 3. Call order and input rejection.
+        // 3. Peek after every feed: the stream's frames and segments are
+        //    still those of the whole run, and each peek equals a whole run
+        //    (on a second session) of the audio fed so far.
+        transcribe_diarize_session * dia2 = nullptr;
+        CHECK(transcribe_diarize_session_init(model, nullptr, &dia2) == TRANSCRIBE_OK);
+        report("peek, 20 s pieces", run_stream(dia, pcm, DEF, { 320000 }, whole, Peek::EveryVsPrefixRun, dia2));
+        report("peek, uneven pieces", run_stream(dia, pcm, DEF, { 100, 159, 48000, 7919, 100003, 257, 640000 }, whole,
+                                                 Peek::EveryVsPrefixRun, dia2));
+        report("peek, low_latency, 4 s pieces",
+               run_stream(dia, pcm, LOW, { 64000 }, whole_low, Peek::EveryVsPrefixRun, dia2));
+        report("peek, low_latency, 1 s pieces", run_stream(dia, pcm, LOW, { 16000 }, whole_low, Peek::Every));
+        transcribe_diarize_session_free(dia2);
+
+        // 3b. Call order and input rejection.
         const int n_before = transcribe_diarize_n_segments(dia);
         CHECK(n_before > 0);
         CHECK(transcribe_diarize_stream_feed(dia, pcm.data(), 16000) == TRANSCRIBE_ERR_INVALID_ARG);  // no stream
+        CHECK(transcribe_diarize_stream_peek(dia) == TRANSCRIBE_ERR_INVALID_ARG);
         CHECK(transcribe_diarize_stream_finish(dia) == TRANSCRIBE_ERR_INVALID_ARG);
         transcribe_nemotron3_diar_diarize_ext bad;
-        transcribe_diarize_params             bad_dp = params_for(bad, static_cast<transcribe_nemotron3_diar_preset>(99));
+        transcribe_diarize_params bad_dp = params_for(bad, static_cast<transcribe_nemotron3_diar_preset>(99));
         CHECK(transcribe_diarize_stream_begin(dia, &bad_dp) == TRANSCRIBE_ERR_INVALID_ARG);
         CHECK(transcribe_diarize_n_segments(dia) == n_before);  // rejected before the commit point
 
@@ -326,6 +422,8 @@ int main() {
         CHECK(transcribe_diarize_stream_feed(dia, nan_pcm.data(), 160) == TRANSCRIBE_ERR_INVALID_ARG);
         // ... none of which ended the stream: sub-hop audio is an empty OK result.
         CHECK(transcribe_diarize_stream_feed(dia, pcm.data(), 100) == TRANSCRIBE_OK);
+        CHECK(transcribe_diarize_stream_peek(dia) == TRANSCRIBE_OK);
+        CHECK(transcribe_diarize_n_segments(dia) == 0);
         CHECK(transcribe_diarize_stream_finish(dia) == TRANSCRIBE_OK);
         CHECK(transcribe_diarize_n_segments(dia) == 0 && transcribe_diarize_stream_decided_ms(dia) == 0);
         CHECK(transcribe_diarize_stream_finish(dia) == TRANSCRIBE_ERR_INVALID_ARG);
@@ -345,6 +443,13 @@ int main() {
         CHECK(transcribe_diarize_stream_begin(dia, nullptr) == TRANSCRIBE_OK);
         CHECK(transcribe_diarize_stream_feed(dia, pcm.data(), 640000) == TRANSCRIBE_OK);
         CHECK(transcribe_diarize_n_segments(dia) > 0);
+        // An aborted peek leaves the stream and the segments in place.
+        const int n_dec_rows = transcribe_diarize_n_segments(dia);
+        transcribe_diarize_set_abort_callback(dia, abort_now, nullptr);
+        CHECK(transcribe_diarize_stream_peek(dia) == TRANSCRIBE_ERR_ABORTED);
+        CHECK(transcribe_diarize_n_segments(dia) == n_dec_rows && transcribe_diarize_stream_decided_ms(dia) > 0);
+        transcribe_diarize_set_abort_callback(dia, nullptr, nullptr);
+        CHECK(transcribe_diarize_stream_peek(dia) == TRANSCRIBE_OK);
         transcribe_diarize_set_abort_callback(dia, abort_now, nullptr);
         CHECK(transcribe_diarize_stream_feed(dia, pcm.data() + 640000, 16000) == TRANSCRIBE_ERR_ABORTED);
         CHECK(transcribe_diarize_n_segments(dia) == 0 && transcribe_diarize_stream_decided_ms(dia) == 0);

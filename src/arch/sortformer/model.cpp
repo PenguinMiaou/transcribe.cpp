@@ -1056,6 +1056,7 @@ static const DiarizeOps k_diarize_ops = {
     /* .stream_begin  = */ nullptr,
     /* .stream_feed   = */ nullptr,
     /* .stream_finish = */ nullptr,
+    /* .stream_peek   = */ nullptr,
 };
 
 extern const Arch arch = {

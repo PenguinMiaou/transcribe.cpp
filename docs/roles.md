@@ -32,7 +32,9 @@ A DIARIZE session can also take a recording in pieces
 (`transcribe_diarize_stream_begin` / `_feed` / `_finish`): the segments decided
 so far are readable after each feed, speaker ids stay the same for the whole
 recording, and the final result equals `transcribe_diarize_run` on the
-concatenated audio. Families without this mode return
+concatenated audio. `transcribe_diarize_stream_peek` adds a provisional view
+of the audio not decided yet without touching the stream. Families without
+this mode return
 `TRANSCRIBE_ERR_NOT_IMPLEMENTED` (Nemotron-3-Diarization has it; Sortformer
 does not).
 

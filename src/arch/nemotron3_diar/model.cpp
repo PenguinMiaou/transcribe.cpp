@@ -769,44 +769,50 @@ static transcribe_status diarize_run(transcribe_diarize_session *      session,
 //   - chunks: advance_chunks(final=false) runs a chunk only when its window
 //     no longer depends on the recording length.
 
-// Turn fed PCM into mel frames. final: every frame of the recording
+// Turn fed PCM into mel frames of `u`. final: every frame of the recording
 // (floor(n / hop)); otherwise only the frames whose samples are all there.
-static transcribe_status stream_mel(Nemotron3DiarSession * pc, Nemotron3DiarModel * pm, bool final) {
+// Reads the session's fed PCM without changing it.
+static transcribe_status stream_mel(Nemotron3DiarSession * pc, Nemotron3DiarModel * pm, Utterance & u, bool final) {
     const Nemotron3DiarHParams & hp   = pm->hparams;
     const int64_t                hop  = hp.fe_hop_length;
     const int64_t                pad  = hp.fe_n_fft / 2;
     const int64_t                back = (pad + hop) / hop;  // leading slice frames touched by the slice start
-    Utterance &                  u    = pc->utt;
     const int64_t                n    = pc->stream_n_fed;
 
     const int64_t valid = n / hop;
     const int64_t ready = final ? valid : std::min<int64_t>(valid, n >= pad ? (n - pad) / hop + 1 : 0);
-    if (ready > u.mel_frames) {
-        const int64_t first    = std::max<int64_t>(0, u.mel_frames - back);  // global frame of slice frame 0
-        const size_t  off      = static_cast<size_t>(first * hop - pc->stream_pcm_base);
-        const int64_t t0       = ggml_time_us();
-        int           n_mels   = 0;
-        int           n_frames = 0;
-        if (const transcribe_status st = pm->mel->compute(pc->stream_pcm.data() + off, pc->stream_pcm.size() - off,
-                                                          pc->mel_buf, n_mels, n_frames, pc->n_threads);
-            st != TRANSCRIBE_OK) {
-            return st;
-        }
-        if (ready - first > n_frames) {
-            return TRANSCRIBE_ERR_BACKEND;  // unreachable: the slice holds every sample of frames < ready
-        }
-        append_mel(u, pc->mel_buf, n_mels, n_frames, static_cast<int>(u.mel_frames - first),
-                   static_cast<int>(ready - u.mel_frames));
-        pc->t_mel_us += ggml_time_us() - t0;
+    if (ready <= u.mel_frames) {
+        return TRANSCRIBE_OK;
     }
-    // Keep only what the next slice needs.
-    const int64_t keep_from = std::max<int64_t>(0, u.mel_frames - back) * hop;
+    const int64_t first    = std::max<int64_t>(0, u.mel_frames - back);  // global frame of slice frame 0
+    const size_t  off      = static_cast<size_t>(first * hop - pc->stream_pcm_base);
+    const int64_t t0       = ggml_time_us();
+    int           n_mels   = 0;
+    int           n_frames = 0;
+    if (const transcribe_status st = pm->mel->compute(pc->stream_pcm.data() + off, pc->stream_pcm.size() - off,
+                                                      pc->mel_buf, n_mels, n_frames, pc->n_threads);
+        st != TRANSCRIBE_OK) {
+        return st;
+    }
+    if (ready - first > n_frames) {
+        return TRANSCRIBE_ERR_BACKEND;  // unreachable: the slice holds every sample of frames < ready
+    }
+    append_mel(u, pc->mel_buf, n_mels, n_frames, static_cast<int>(u.mel_frames - first),
+               static_cast<int>(ready - u.mel_frames));
+    pc->t_mel_us += ggml_time_us() - t0;
+    return TRANSCRIBE_OK;
+}
+
+// Drop the fed PCM no later mel slice needs.
+static void stream_trim_pcm(Nemotron3DiarSession * pc, const Nemotron3DiarHParams & hp) {
+    const int64_t hop       = hp.fe_hop_length;
+    const int64_t back      = (hp.fe_n_fft / 2 + hop) / hop;
+    const int64_t keep_from = std::max<int64_t>(0, pc->utt.mel_frames - back) * hop;
     if (keep_from > pc->stream_pcm_base) {
         pc->stream_pcm.erase(pc->stream_pcm.begin(),
                              pc->stream_pcm.begin() + static_cast<ptrdiff_t>(keep_from - pc->stream_pcm_base));
         pc->stream_pcm_base = keep_from;
     }
-    return TRANSCRIBE_OK;
 }
 
 static transcribe_status diarize_stream_begin(transcribe_diarize_session *      session,
@@ -830,9 +836,10 @@ static transcribe_status stream_advance(Nemotron3DiarSession * pc, Nemotron3Diar
     if (pc->poll_abort()) {
         return TRANSCRIBE_ERR_ABORTED;
     }
-    if (const transcribe_status st = stream_mel(pc, pm, final); st != TRANSCRIBE_OK) {
+    if (const transcribe_status st = stream_mel(pc, pm, pc->utt, final); st != TRANSCRIBE_OK) {
         return st;
     }
+    stream_trim_pcm(pc, pm->hparams);
     const int64_t t_enc0 = ggml_time_us();
     if (const transcribe_status st = advance_chunks(pc, pm, pc->utt, final); st != TRANSCRIBE_OK) {
         return st;
@@ -878,6 +885,32 @@ static transcribe_status diarize_stream_finish(transcribe_diarize_session * sess
     return TRANSCRIBE_OK;
 }
 
+// The tail as finish would compute it, on a copy of the utterance (operating
+// point, speaker cache, FIFO, pending mel, frames so far). The committed
+// utterance and the fed PCM are only read; the session's graph scratch is
+// shared, which holds no stream state.
+static transcribe_status diarize_stream_peek(transcribe_diarize_session * session, DiarizeProbs & out) {
+    auto * pc      = static_cast<Nemotron3DiarSession *>(session);
+    auto * pm      = static_cast<Nemotron3DiarModel *>(session->model);
+    out.n_speakers = pm->hparams.max_speakers;
+    out.frame_ms   = ms_per_output_frame(pm->hparams);
+    if (pc->poll_abort()) {
+        return TRANSCRIBE_ERR_ABORTED;
+    }
+    Utterance u = pc->utt;
+    if (const transcribe_status st = stream_mel(pc, pm, u, /*final=*/true); st != TRANSCRIBE_OK) {
+        return st;
+    }
+    const int64_t t_enc0 = ggml_time_us();
+    if (const transcribe_status st = advance_chunks(pc, pm, u, /*final=*/true); st != TRANSCRIBE_OK) {
+        return st;
+    }
+    pc->t_encode_us += ggml_time_us() - t_enc0;
+    out.n_frames = u.st.total_n;
+    out.probs.swap(u.st.total_preds);
+    return TRANSCRIBE_OK;
+}
+
 // Kind+slot probe: the operating-point preset on the DIARIZE_RUN slot.
 static bool accepts_ext_kind(const transcribe_model * model, transcribe_ext_slot slot, uint32_t kind) {
     return model != nullptr && slot == TRANSCRIBE_EXT_SLOT_DIARIZE_RUN &&
@@ -892,6 +925,7 @@ static const DiarizeOps k_diarize_ops = {
     /* .stream_begin  = */ diarize_stream_begin,
     /* .stream_feed   = */ diarize_stream_feed,
     /* .stream_finish = */ diarize_stream_finish,
+    /* .stream_peek   = */ diarize_stream_peek,
 };
 
 extern const Arch arch = {

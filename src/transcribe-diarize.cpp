@@ -275,6 +275,29 @@ static transcribe_status diarize_stream_finish_impl(transcribe_diarize_session *
     return TRANSCRIBE_OK;
 }
 
+// Segments over everything fed: the decided frames plus the tail as finish
+// would compute it now. The stream goes on unchanged, also when this fails.
+static transcribe_status diarize_stream_peek_impl(transcribe_diarize_session * session) {
+    if (session == nullptr) {
+        return TRANSCRIBE_ERR_INVALID_ARG;
+    }
+    const transcribe::DiarizeOps * ops = diarize_ops(session->model);
+    if (ops->stream_peek == nullptr) {
+        return TRANSCRIBE_ERR_NOT_IMPLEMENTED;
+    }
+    if (!session->stream_active) {
+        return TRANSCRIBE_ERR_INVALID_ARG;
+    }
+    transcribe::DiarizeProbs out;
+    if (const auto st = ops->stream_peek(session, out); st != TRANSCRIBE_OK) {
+        return st;
+    }
+    std::vector<transcribe::SpeakerSegmentEntry> segments;
+    transcribe::probs_to_segments(out.probs.data(), out.n_frames, out.n_speakers, out.frame_ms, segments);
+    session->segments.swap(segments);
+    return TRANSCRIBE_OK;
+}
+
 extern "C" void transcribe_diarize_set_abort_callback(struct transcribe_diarize_session * session,
                                                       transcribe_abort_callback           cb,
                                                       void *                              user_data) {
@@ -350,6 +373,10 @@ extern "C" transcribe_status transcribe_diarize_stream_feed(struct transcribe_di
                                                             int                                 n_samples) {
     return api_guard_status("transcribe_diarize_stream_feed",
                             [&] { return diarize_stream_feed_impl(session, pcm, n_samples); });
+}
+
+extern "C" transcribe_status transcribe_diarize_stream_peek(struct transcribe_diarize_session * session) {
+    return api_guard_status("transcribe_diarize_stream_peek", [&] { return diarize_stream_peek_impl(session); });
 }
 
 extern "C" transcribe_status transcribe_diarize_stream_finish(struct transcribe_diarize_session * session) {

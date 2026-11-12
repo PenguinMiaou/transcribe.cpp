@@ -84,8 +84,8 @@ TRANSCRIBE_API transcribe_status transcribe_diarize_run(struct transcribe_diariz
  * transcribe_diarize_stream_begin starts a recording; params as for
  * transcribe_diarize_run (NULL for defaults). It replaces the previous
  * result and any stream in progress; a bad params struct or extension
- * returns an error before either is touched. NOT_IMPLEMENTED (from all
- * three calls) when the model has no push mode.
+ * returns an error before either is touched. NOT_IMPLEMENTED (from begin,
+ * feed, peek and finish) when the model has no push mode.
  *
  * transcribe_diarize_stream_feed appends 16 kHz mono float32 PCM (every
  * sample finite) and computes every frame that later audio can no longer
@@ -97,19 +97,31 @@ TRANSCRIBE_API transcribe_status transcribe_diarize_run(struct transcribe_diariz
  * no-op. INVALID_ARG without an active stream or for malformed input
  * (negative n_samples, NULL pcm, NaN / Inf), leaving the stream as it was.
  *
+ * transcribe_diarize_stream_peek makes the segment accessors describe all
+ * the audio fed so far: the decided part followed by a provisional tail,
+ * computed as finish would compute it if the recording ended now (the
+ * result of transcribe_diarize_run on the audio fed so far). Everything from
+ * transcribe_diarize_stream_decided_ms on may change with later audio. The
+ * stream is left exactly as it was: later feeds, the decided end and the
+ * final result are the same with or without peeks, and the next feed puts
+ * the accessors back on the decided frames. Each peek recomputes the whole
+ * tail. INVALID_ARG without an active stream; a peek that fails (aborted,
+ * backend error) leaves the stream and the previous segments in place.
+ *
  * transcribe_diarize_stream_finish ends the recording: the rest of the fed
  * audio is processed and the segments are the final ones. INVALID_ARG
  * without an active stream.
  *
- * The abort callback is polled during feed and finish. A feed or finish
- * that fails after input validation (aborted, backend error) ends the
- * stream with an empty result; start again with begin.
+ * The abort callback is polled during feed, peek and finish. A feed or
+ * finish that fails after input validation (aborted, backend error) ends
+ * the stream with an empty result; start again with begin.
  */
 TRANSCRIBE_API transcribe_status transcribe_diarize_stream_begin(struct transcribe_diarize_session *      session,
                                                                  const struct transcribe_diarize_params * params);
 TRANSCRIBE_API transcribe_status transcribe_diarize_stream_feed(struct transcribe_diarize_session * session,
                                                                 const float *                       pcm,
                                                                 int                                 n_samples);
+TRANSCRIBE_API transcribe_status transcribe_diarize_stream_peek(struct transcribe_diarize_session * session);
 TRANSCRIBE_API transcribe_status transcribe_diarize_stream_finish(struct transcribe_diarize_session * session);
 
 /* End time in ms of the last decided frame of the current stream, or of the

@@ -48,7 +48,7 @@ struct DiarizeOps {
                              int                               n_samples,
                              const transcribe_diarize_params * params,
                              DiarizeProbs &                    out);
-    // Push mode; all three NULL when the family has none. params is already
+    // Push mode; all four NULL when the family has none. params is already
     // validated like run's. stream_feed advances every chunk whose result
     // cannot change with later audio and points `decided` at the frames
     // decided so far (owned by the session, valid until its next call);
@@ -60,6 +60,9 @@ struct DiarizeOps {
                                      int                          n_samples,
                                      DiarizeProbsView &           decided);
     transcribe_status (*stream_finish)(transcribe_diarize_session * session, DiarizeProbs & out);
+    // The frames stream_finish would hand over if the recording ended now,
+    // computed on a copy: the stream itself is left exactly as it was.
+    transcribe_status (*stream_peek)(transcribe_diarize_session * session, DiarizeProbs & out);
 };
 
 // Append one segment per contiguous run of probs > 0.5 per speaker,
