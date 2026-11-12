@@ -112,6 +112,90 @@ fn nemotron3_diar_diarize_run_and_preset() {
 }
 
 #[test]
+fn nemotron3_diar_stream_feed_in_pieces_equals_run() {
+    use transcribe_cpp::{Nemotron3DiarDiarizeOptions, Nemotron3DiarPreset};
+    let Some((model_path, pcm)) =
+        common::smoke_nemotron3_diar_fixtures("nemotron3_diar_stream_feed_in_pieces_equals_run")
+    else {
+        return;
+    };
+    // Frame-level equality is pinned in C (tests/nemotron3_diar_diarize_stream_unit.cpp).
+    let model = Model::load(&model_path).unwrap();
+    let mut diarize = model.diarize_session().unwrap();
+    let rows = |turns: &[transcribe_cpp::SpeakerSegment]| -> Vec<(i64, i64, i32)> {
+        turns
+            .iter()
+            .map(|s| (s.t0_ms, s.t1_ms, s.speaker_id))
+            .collect()
+    };
+    let audio_ms = (pcm.len() / 16) as i64;
+    let low_latency = DiarizeOptions {
+        family: Some(DiarizeExtension::Nemotron3Diar(
+            Nemotron3DiarDiarizeOptions {
+                preset: Some(Nemotron3DiarPreset::LowLatency),
+            },
+        )),
+    };
+
+    // No stream yet.
+    assert!(matches!(
+        diarize.stream_feed(&pcm[..160]),
+        Err(Error::InvalidArgument(_))
+    ));
+    assert!(matches!(
+        diarize.stream_finish(),
+        Err(Error::InvalidArgument(_))
+    ));
+
+    for options in [DiarizeOptions::default(), low_latency] {
+        let whole = rows(&diarize.run(&pcm, &options).unwrap());
+        assert!(!whole.is_empty());
+        for pieces in [&[16_000usize][..], &[4_801, 1, 160, 31_999, 257][..]] {
+            diarize.stream_begin(&options).unwrap();
+            assert_eq!(diarize.stream_decided_ms(), 0);
+            assert!(diarize.stream_feed(&[]).unwrap().is_empty());
+            let (mut pos, mut k, mut decided) = (0usize, 0usize, 0i64);
+            while pos < pcm.len() {
+                let n = pieces[k % pieces.len()].min(pcm.len() - pos);
+                let so_far = rows(&diarize.stream_feed(&pcm[pos..pos + n]).unwrap());
+                pos += n;
+                k += 1;
+                let now = diarize.stream_decided_ms();
+                assert!(now >= decided && now <= (pos / 16) as i64);
+                decided = now;
+                // The decided part is the whole-run result cut at the decided end.
+                let cut: Vec<_> = whole
+                    .iter()
+                    .filter(|r| r.0 < decided)
+                    .map(|r| (r.0, r.1.min(decided), r.2))
+                    .collect();
+                assert_eq!(so_far, cut, "decided {decided} ms after {pos} samples");
+            }
+            assert_eq!(rows(&diarize.stream_finish().unwrap()), whole);
+            assert_eq!(diarize.stream_decided_ms(), audio_ms / 10 * 10);
+        }
+    }
+
+    // Malformed input leaves the stream usable; a cancelled feed ends it.
+    diarize.stream_begin(&DiarizeOptions::default()).unwrap();
+    assert!(matches!(
+        diarize.stream_feed(&[f32::NAN; 16]),
+        Err(Error::InvalidArgument(_))
+    ));
+    diarize.stream_feed(&pcm[..16_000]).unwrap();
+    let token = CancelToken::new();
+    diarize.set_cancel_token(&token);
+    token.cancel();
+    let err = diarize.stream_feed(&pcm[16_000..32_000]).unwrap_err();
+    assert!(matches!(err, Error::Aborted { .. }), "{err:?}");
+    diarize.clear_cancel_token();
+    assert!(matches!(
+        diarize.stream_feed(&pcm[..160]),
+        Err(Error::InvalidArgument(_))
+    ));
+}
+
+#[test]
 fn diarize_session_rejects_bad_input_and_cancels() {
     let Some((model_path, pcm)) =
         common::smoke_sortformer_fixtures("diarize_session_rejects_bad_input_and_cancels")

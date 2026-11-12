@@ -126,19 +126,81 @@ impl DiarizeSession {
             |_| unsafe { sys::transcribe_diarize_run(self.ptr, pcm.as_ptr(), n, &params) },
         )?;
         check(status, "diarize run")?;
+        Ok(self.segments())
+    }
 
+    /// Start diarizing a recording whose audio arrives in pieces: follow with
+    /// [`stream_feed`](Self::stream_feed) per piece and
+    /// [`stream_finish`](Self::stream_finish) at the end. The result equals
+    /// [`run`](Self::run) on the concatenated pieces for any split, and
+    /// speaker ids stay the same from the first feed to the end. Replaces the
+    /// previous result and any stream in progress. A model without this mode
+    /// returns [`Error::NotImplemented`](crate::Error).
+    pub fn stream_begin(&mut self, options: &DiarizeOptions) -> Result<()> {
+        let family = options.family.as_ref().map(DiarizeExtension::materialize);
+        let mut params: sys::transcribe_diarize_params = unsafe { std::mem::zeroed() };
+        unsafe { sys::transcribe_diarize_params_init(&mut params) };
+        params.family = family.as_ref().map_or(std::ptr::null(), |f| f.ext_ptr());
+
+        let status = self.model.with_compute(
+            Some(
+                "a stream is active on this model; finish or drop it before diarize stream_begin()",
+            ),
+            |_| unsafe { sys::transcribe_diarize_stream_begin(self.ptr, &params) },
+        )?;
+        check(status, "diarize stream begin")
+    }
+
+    /// Append 16 kHz mono float32 PCM to the recording and return the
+    /// segments over the audio decided so far, `[0, stream_decided_ms())`.
+    /// A segment that ends at the decided end may still grow; earlier ones are
+    /// final. The decided end trails the fed audio by the model's look-ahead.
+    /// An empty slice is a no-op. A feed that fails after input validation
+    /// (aborted, backend error) ends the stream.
+    pub fn stream_feed(&mut self, pcm: &[f32]) -> Result<Vec<SpeakerSegment>> {
+        let n = clamp_len(pcm.len())?;
+        let status = self.model.with_compute(
+            Some(
+                "a stream is active on this model; finish or drop it before diarize stream_feed()",
+            ),
+            |_| unsafe { sys::transcribe_diarize_stream_feed(self.ptr, pcm.as_ptr(), n) },
+        )?;
+        check(status, "diarize stream feed")?;
+        Ok(self.segments())
+    }
+
+    /// End time in ms of the last decided frame of the current stream, or of
+    /// the last finished one.
+    pub fn stream_decided_ms(&self) -> i64 {
+        unsafe { sys::transcribe_diarize_stream_decided_ms(self.ptr) }
+    }
+
+    /// End the recording: process the rest of the fed audio and return the
+    /// final segments.
+    pub fn stream_finish(&mut self) -> Result<Vec<SpeakerSegment>> {
+        let status = self.model.with_compute(
+            Some("a stream is active on this model; finish or drop it before diarize stream_finish()"),
+            |_| unsafe { sys::transcribe_diarize_stream_finish(self.ptr) },
+        )?;
+        check(status, "diarize stream finish")?;
+        Ok(self.segments())
+    }
+
+    // The session's current speaker segments, copied out.
+    fn segments(&self) -> Vec<SpeakerSegment> {
         let count = unsafe { sys::transcribe_diarize_n_segments(self.ptr) };
-        Ok((0..count)
+        (0..count)
             .map(|i| {
                 let mut raw: sys::transcribe_speaker_segment = unsafe { std::mem::zeroed() };
                 unsafe { sys::transcribe_speaker_segment_init(&mut raw) };
                 let _ = unsafe { sys::transcribe_diarize_get_segment(self.ptr, i, &mut raw) };
                 SpeakerSegment::from_raw(&raw)
             })
-            .collect())
+            .collect()
     }
 
-    /// Model load time plus the last run's stage timings (`decode_ms` is 0).
+    /// Model load time plus the last run's stage timings, summed over the
+    /// feeds of a stream (`decode_ms` is 0).
     pub fn timings(&self) -> Timings {
         let mut raw: sys::transcribe_timings = unsafe { std::mem::zeroed() };
         unsafe { sys::transcribe_timings_init(&mut raw) };
