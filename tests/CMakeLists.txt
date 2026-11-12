@@ -1518,6 +1518,22 @@ if(TRANSCRIBE_BUILD_REAL_MODEL_TESTS)
         COMMAND transcribe_nemotron3_diar_diarize_unit)
     set_tests_properties(transcribe_nemotron3_diar_diarize_unit PROPERTIES
         SKIP_RETURN_CODE 77)
+
+    # Nemotron-3-Diarization push mode: begin + feed(pieces) + finish gives
+    # the frame probabilities and segments of the whole-recording run for
+    # several splits, the decided prefix matches before finish, call-order
+    # and input rejection, abort. Same gate as the unit above.
+    add_executable(transcribe_nemotron3_diar_diarize_stream_unit
+        nemotron3_diar_diarize_stream_unit.cpp)
+    target_link_libraries(transcribe_nemotron3_diar_diarize_stream_unit
+        PRIVATE transcribe transcribe-common-example)
+    target_compile_definitions(transcribe_nemotron3_diar_diarize_stream_unit PRIVATE
+        "TRANSCRIBE_TEST_SAMPLES_DIR=\"${CMAKE_SOURCE_DIR}/samples\"")
+    transcribe_apply_warnings(transcribe_nemotron3_diar_diarize_stream_unit)
+    add_test(NAME transcribe_nemotron3_diar_diarize_stream_unit
+        COMMAND transcribe_nemotron3_diar_diarize_stream_unit)
+    set_tests_properties(transcribe_nemotron3_diar_diarize_stream_unit PROPERTIES
+        SKIP_RETURN_CODE 77)
 endif()
 
 # -----------------------------------------------------------------------------

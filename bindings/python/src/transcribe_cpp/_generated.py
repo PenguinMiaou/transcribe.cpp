@@ -13,7 +13,7 @@ import ctypes as _c
 # Stable digest of the ABI surface below (structs, enums, macros, layout,
 # prototypes). A native provider package echoes this back so the API
 # package can reject an ABI-mismatched provider before dlopen.
-PUBLIC_HEADER_HASH = "2bf21db79cc0658b"
+PUBLIC_HEADER_HASH = "c10e3398ca58dcee"
 
 # === enum constants ===
 TRANSCRIBE_OK = 0
@@ -425,6 +425,14 @@ def configure(lib):
     lib.transcribe_diarize_session_params_init.argtypes = [_c.POINTER(transcribe_diarize_session_params)]
     lib.transcribe_diarize_set_abort_callback.restype = None
     lib.transcribe_diarize_set_abort_callback.argtypes = [_c.c_void_p, _c.CFUNCTYPE(_c.c_bool, _c.c_void_p), _c.c_void_p]
+    lib.transcribe_diarize_stream_begin.restype = _c.c_int
+    lib.transcribe_diarize_stream_begin.argtypes = [_c.c_void_p, _c.POINTER(transcribe_diarize_params)]
+    lib.transcribe_diarize_stream_decided_ms.restype = _c.c_int64
+    lib.transcribe_diarize_stream_decided_ms.argtypes = [_c.c_void_p]
+    lib.transcribe_diarize_stream_feed.restype = _c.c_int
+    lib.transcribe_diarize_stream_feed.argtypes = [_c.c_void_p, _c.POINTER(_c.c_float), _c.c_int]
+    lib.transcribe_diarize_stream_finish.restype = _c.c_int
+    lib.transcribe_diarize_stream_finish.argtypes = [_c.c_void_p]
     lib.transcribe_ext_check.restype = _c.c_int
     lib.transcribe_ext_check.argtypes = [_c.POINTER(transcribe_ext), _c.c_uint32, _c.c_uint64]
     lib.transcribe_full_text.restype = _c.c_char_p

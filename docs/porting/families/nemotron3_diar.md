@@ -13,6 +13,19 @@ that cite them, `transcribe_nemotron3_diar_stream_unit`, or `--diar-preset`
 record the original port's validation, not the current tree. The current
 gate is `tests/nemotron3_diar_diarize_unit.cpp`.
 
+Push mode on the DIARIZE role: `transcribe_diarize_stream_begin` / `_feed` /
+`_finish` feed a recording in pieces and `transcribe_diarize_stream_decided_ms`
+reports how far the decision reaches. A mel frame is computed once every
+sample under its STFT window has been fed (from a PCM slice starting 2 hops
+before the first new frame), and a chunk runs once its window (chunk + right
+context) no longer depends on the recording length; finish runs the tail as
+the whole-recording run does. Frame probabilities are bit-identical to
+`transcribe_diarize_run` for any split (gate:
+`tests/nemotron3_diar_diarize_stream_unit.cpp`; dispatcher call order in
+`tests/diarize_dispatch_unit.cpp`). Between feeds the session keeps the
+speaker cache / FIFO, the unconsumed mel, under 1000 PCM samples and the
+10 ms probabilities.
+
 Intake signed off 2026-09-24: capability scope approved as drafted, with
 live push-audio diarization added as MUST PASS. Acceptance set = AMI Test
 MHM forced-alignment (primary) + NOTSOFAR1 Eval MHM (5-8 speaker

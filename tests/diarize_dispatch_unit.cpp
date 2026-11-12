@@ -1,6 +1,6 @@
 // diarize_dispatch_unit.cpp - DIARIZE role dispatcher (transcribe-diarize.cpp)
 // against a fake arch: role checks, pre-clear validation, probs -> segments,
-// accessors.
+// accessors, push mode (stream_begin / feed / finish).
 
 #include "transcribe-arch.h"
 #include "transcribe-diarize.h"
@@ -65,7 +65,58 @@ bool fake_accepts(const transcribe_model *, transcribe_ext_slot slot, uint32_t k
     return slot == TRANSCRIBE_EXT_SLOT_DIARIZE_RUN && kind == k_fake_kind;
 }
 
-const transcribe::DiarizeOps k_ops = { fake_max_speakers, fake_new_session, fake_run_validate, fake_run };
+// Push mode of the fake: one 80 ms frame per 1280 fed samples, speaker 1
+// active in every second frame; finish adds one closing frame for speaker 2.
+std::vector<float> g_stream_probs;
+int                g_stream_samples = 0;
+transcribe_status  g_stream_status  = TRANSCRIBE_OK;
+
+transcribe_status fake_stream_begin(transcribe_diarize_session *, const transcribe_diarize_params *) {
+    g_stream_probs.clear();
+    g_stream_samples = 0;
+    return TRANSCRIBE_OK;
+}
+
+transcribe_status fake_stream_feed(transcribe_diarize_session *,
+                                   const float *,
+                                   int                            n_samples,
+                                   transcribe::DiarizeProbsView & decided) {
+    if (g_stream_status != TRANSCRIBE_OK) {
+        return g_stream_status;
+    }
+    g_stream_samples += n_samples;
+    while (static_cast<int>(g_stream_probs.size() / 2) < g_stream_samples / 1280) {
+        const bool on = (g_stream_probs.size() / 2) % 2 == 0;
+        g_stream_probs.push_back(on ? 0.9f : 0.1f);
+        g_stream_probs.push_back(0.0f);
+    }
+    decided.probs      = g_stream_probs.data();
+    decided.n_frames   = static_cast<int>(g_stream_probs.size() / 2);
+    decided.n_speakers = 2;
+    decided.frame_ms   = 80.0;
+    return TRANSCRIBE_OK;
+}
+
+transcribe_status fake_stream_finish(transcribe_diarize_session *, transcribe::DiarizeProbs & out) {
+    if (g_stream_status != TRANSCRIBE_OK) {
+        return g_stream_status;
+    }
+    out.probs = g_stream_probs;
+    out.probs.push_back(0.0f);
+    out.probs.push_back(0.8f);
+    out.n_frames   = static_cast<int>(out.probs.size() / 2);
+    out.n_speakers = 2;
+    out.frame_ms   = 80.0;
+    return TRANSCRIBE_OK;
+}
+
+const transcribe::DiarizeOps k_ops = {
+    fake_max_speakers, fake_new_session, fake_run_validate, fake_run, nullptr, nullptr, nullptr,
+};
+const transcribe::DiarizeOps k_stream_ops = {
+    fake_max_speakers, fake_new_session, fake_run_validate,  fake_run,
+    fake_stream_begin, fake_stream_feed, fake_stream_finish,
+};
 
 const transcribe::Arch k_arch = {
     /* .name             = */ "fake-diarize",
@@ -83,13 +134,29 @@ const transcribe::Arch k_arch = {
     /* .diarize          = */ &k_ops,
 };
 
+const transcribe::Arch k_stream_arch = {
+    /* .name             = */ "fake-diarize-stream",
+    /* .load             = */ nullptr,
+    /* .init_context     = */ nullptr,
+    /* .run              = */ nullptr,
+    /* .run_batch        = */ nullptr,
+    /* .stream_validate  = */ nullptr,
+    /* .stream_begin     = */ nullptr,
+    /* .stream_feed      = */ nullptr,
+    /* .stream_finalize  = */ nullptr,
+    /* .stream_reset     = */ nullptr,
+    /* .accepts_ext_kind = */ fake_accepts,
+    /* .run_validate     = */ nullptr,
+    /* .diarize          = */ &k_stream_ops,
+};
+
 struct Fixture {
     transcribe_model             model;
     transcribe_diarize_session * session = nullptr;
     std::vector<float>           pcm     = std::vector<float>(1600, 0.0f);
 
-    Fixture() {
-        model.arch  = &k_arch;
+    explicit Fixture(const transcribe::Arch * arch = &k_arch) {
+        model.arch  = arch;
         model.roles = TRANSCRIBE_ROLE_DIARIZE;
         CHECK(transcribe_diarize_session_init(&model, nullptr, &session) == TRANSCRIBE_OK);
     }
@@ -204,6 +271,108 @@ void test_pre_clear_rejections_preserve_result() {
     g_run_status = TRANSCRIBE_OK;
 }
 
+// A family without push mode refuses all three calls and keeps its result.
+void test_stream_unsupported() {
+    Fixture f;
+    CHECK(f.run() == TRANSCRIBE_OK);
+    CHECK(transcribe_diarize_stream_begin(f.session, nullptr) == TRANSCRIBE_ERR_NOT_IMPLEMENTED);
+    CHECK(transcribe_diarize_stream_feed(f.session, f.pcm.data(), 1600) == TRANSCRIBE_ERR_NOT_IMPLEMENTED);
+    CHECK(transcribe_diarize_stream_finish(f.session) == TRANSCRIBE_ERR_NOT_IMPLEMENTED);
+    CHECK(transcribe_diarize_n_segments(f.session) == 2);
+    CHECK(transcribe_diarize_stream_decided_ms(f.session) == 0);
+    CHECK(transcribe_diarize_stream_decided_ms(nullptr) == 0);
+}
+
+void test_stream_calls() {
+    g_validate_st   = TRANSCRIBE_OK;
+    g_run_status    = TRANSCRIBE_OK;
+    g_stream_status = TRANSCRIBE_OK;
+    Fixture f(&k_stream_arch);
+    CHECK(transcribe_diarize_stream_begin(nullptr, nullptr) == TRANSCRIBE_ERR_INVALID_ARG);
+    CHECK(transcribe_diarize_stream_feed(nullptr, f.pcm.data(), 1600) == TRANSCRIBE_ERR_INVALID_ARG);
+    CHECK(transcribe_diarize_stream_finish(nullptr) == TRANSCRIBE_ERR_INVALID_ARG);
+
+    // No stream yet: feed / finish are refused and the run result stays.
+    CHECK(f.run() == TRANSCRIBE_OK);
+    CHECK(transcribe_diarize_stream_feed(f.session, f.pcm.data(), 1600) == TRANSCRIBE_ERR_INVALID_ARG);
+    CHECK(transcribe_diarize_stream_finish(f.session) == TRANSCRIBE_ERR_INVALID_ARG);
+    CHECK(transcribe_diarize_n_segments(f.session) == 2);
+
+    // begin validates params like run, before the previous result is touched.
+    transcribe_ext            ext{ sizeof(transcribe_ext), 0x12345678u };
+    transcribe_diarize_params p;
+    transcribe_diarize_params_init(&p);
+    p.family = &ext;
+    CHECK(transcribe_diarize_stream_begin(f.session, &p) == TRANSCRIBE_ERR_INVALID_ARG);
+    ext.size = 4;
+    CHECK(transcribe_diarize_stream_begin(f.session, &p) == TRANSCRIBE_ERR_BAD_STRUCT_SIZE);
+    ext           = { sizeof(transcribe_ext), k_fake_kind };
+    g_validate_st = TRANSCRIBE_ERR_INVALID_ARG;
+    CHECK(transcribe_diarize_stream_begin(f.session, &p) == TRANSCRIBE_ERR_INVALID_ARG);
+    g_validate_st = TRANSCRIBE_OK;
+    CHECK(transcribe_diarize_n_segments(f.session) == 2);
+
+    CHECK(transcribe_diarize_stream_begin(f.session, &p) == TRANSCRIBE_OK);
+    CHECK(transcribe_diarize_n_segments(f.session) == 0);
+    CHECK(transcribe_diarize_stream_decided_ms(f.session) == 0);
+
+    // Malformed feeds leave the stream as it was; an empty feed is a no-op.
+    std::vector<float> bad(1600, 0.0f);
+    bad[7] = std::numeric_limits<float>::infinity();
+    CHECK(transcribe_diarize_stream_feed(f.session, bad.data(), 1600) == TRANSCRIBE_ERR_INVALID_ARG);
+    CHECK(transcribe_diarize_stream_feed(f.session, nullptr, 1600) == TRANSCRIBE_ERR_INVALID_ARG);
+    CHECK(transcribe_diarize_stream_feed(f.session, f.pcm.data(), -1) == TRANSCRIBE_ERR_INVALID_ARG);
+    CHECK(transcribe_diarize_stream_feed(f.session, nullptr, 0) == TRANSCRIBE_OK);
+    CHECK(g_stream_samples == 0);
+
+    // 1600 samples: one frame decided (speaker 1 open at the decided end).
+    CHECK(transcribe_diarize_stream_feed(f.session, f.pcm.data(), 1600) == TRANSCRIBE_OK);
+    CHECK(transcribe_diarize_stream_decided_ms(f.session) == 80);
+    CHECK(transcribe_diarize_n_segments(f.session) == 1);
+    // 3200: two frames; 4800: three frames, speaker 1 in frames 0 and 2.
+    CHECK(transcribe_diarize_stream_feed(f.session, f.pcm.data(), 1600) == TRANSCRIBE_OK);
+    CHECK(transcribe_diarize_stream_feed(f.session, f.pcm.data(), 1600) == TRANSCRIBE_OK);
+    CHECK(transcribe_diarize_stream_decided_ms(f.session) == 240);
+    CHECK(transcribe_diarize_n_segments(f.session) == 2);
+    transcribe_speaker_segment row;
+    transcribe_speaker_segment_init(&row);
+    CHECK(transcribe_diarize_get_segment(f.session, 1, &row) == TRANSCRIBE_OK);
+    CHECK(row.speaker_id == 1 && row.t0_ms == 160 && row.t1_ms == 240);
+
+    CHECK(transcribe_diarize_stream_finish(f.session) == TRANSCRIBE_OK);
+    CHECK(transcribe_diarize_stream_decided_ms(f.session) == 320);
+    CHECK(transcribe_diarize_n_segments(f.session) == 3);
+    CHECK(transcribe_diarize_get_segment(f.session, 2, &row) == TRANSCRIBE_OK);
+    CHECK(row.speaker_id == 2 && row.t0_ms == 240 && row.t1_ms == 320);
+    // The stream is over; its result stays readable.
+    CHECK(transcribe_diarize_stream_feed(f.session, f.pcm.data(), 1600) == TRANSCRIBE_ERR_INVALID_ARG);
+    CHECK(transcribe_diarize_stream_finish(f.session) == TRANSCRIBE_ERR_INVALID_ARG);
+    CHECK(transcribe_diarize_n_segments(f.session) == 3);
+
+    // A run ends a stream in progress.
+    CHECK(transcribe_diarize_stream_begin(f.session, nullptr) == TRANSCRIBE_OK);
+    CHECK(transcribe_diarize_stream_feed(f.session, f.pcm.data(), 1600) == TRANSCRIBE_OK);
+    CHECK(f.run() == TRANSCRIBE_OK);
+    CHECK(transcribe_diarize_stream_decided_ms(f.session) == 0);
+    CHECK(transcribe_diarize_stream_feed(f.session, f.pcm.data(), 1600) == TRANSCRIBE_ERR_INVALID_ARG);
+
+    // A family failure in feed or finish ends the stream with an empty result.
+    CHECK(transcribe_diarize_stream_begin(f.session, nullptr) == TRANSCRIBE_OK);
+    CHECK(transcribe_diarize_stream_feed(f.session, f.pcm.data(), 1600) == TRANSCRIBE_OK);
+    g_stream_status = TRANSCRIBE_ERR_ABORTED;
+    CHECK(transcribe_diarize_stream_feed(f.session, f.pcm.data(), 1600) == TRANSCRIBE_ERR_ABORTED);
+    CHECK(transcribe_diarize_n_segments(f.session) == 0);
+    CHECK(transcribe_diarize_stream_decided_ms(f.session) == 0);
+    CHECK(transcribe_diarize_stream_finish(f.session) == TRANSCRIBE_ERR_INVALID_ARG);
+    g_stream_status = TRANSCRIBE_OK;
+    CHECK(transcribe_diarize_stream_begin(f.session, nullptr) == TRANSCRIBE_OK);
+    CHECK(transcribe_diarize_stream_feed(f.session, f.pcm.data(), 1600) == TRANSCRIBE_OK);
+    g_stream_status = TRANSCRIBE_ERR_BACKEND;
+    CHECK(transcribe_diarize_stream_finish(f.session) == TRANSCRIBE_ERR_BACKEND);
+    CHECK(transcribe_diarize_n_segments(f.session) == 0);
+    g_stream_status = TRANSCRIBE_OK;
+}
+
 }  // namespace
 
 int main() {
@@ -213,6 +382,8 @@ int main() {
     test_role_checks();
     test_run_and_accessors();
     test_pre_clear_rejections_preserve_result();
+    test_stream_unsupported();
+    test_stream_calls();
 
     if (g_failures != 0) {
         std::fprintf(stderr, "%d failure(s)\n", g_failures);

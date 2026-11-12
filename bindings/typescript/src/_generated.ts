@@ -11,7 +11,7 @@
 // Stable digest of the ABI surface (structs, enums, macros, layout,
 // prototypes), computed by the Python oracle and pinned here so a header
 // ABI change turns this binding's drift check red for conscious review.
-export const PUBLIC_HEADER_HASH = "2bf21db79cc0658b";
+export const PUBLIC_HEADER_HASH = "c10e3398ca58dcee";
 
 // === enum constants ===
 export const TRANSCRIBE_OK = 0;
@@ -311,6 +311,10 @@ export const FUNCTION_SIGNATURES: Record<string, FnSig> = {
   'transcribe_diarize_session_init': { ret: 'transcribe_status', args: ['struct transcribe_model *', 'const struct transcribe_diarize_session_params *', 'struct transcribe_diarize_session **'] },
   'transcribe_diarize_session_params_init': { ret: 'void', args: ['struct transcribe_diarize_session_params *'] },
   'transcribe_diarize_set_abort_callback': { ret: 'void', args: ['struct transcribe_diarize_session *', 'transcribe_abort_callback', 'void *'] },
+  'transcribe_diarize_stream_begin': { ret: 'transcribe_status', args: ['struct transcribe_diarize_session *', 'const struct transcribe_diarize_params *'] },
+  'transcribe_diarize_stream_decided_ms': { ret: 'int64_t', args: ['const struct transcribe_diarize_session *'] },
+  'transcribe_diarize_stream_feed': { ret: 'transcribe_status', args: ['struct transcribe_diarize_session *', 'const float *', 'int'] },
+  'transcribe_diarize_stream_finish': { ret: 'transcribe_status', args: ['struct transcribe_diarize_session *'] },
   'transcribe_ext_check': { ret: 'transcribe_status', args: ['const struct transcribe_ext *', 'uint32_t', 'uint64_t'] },
   'transcribe_full_text': { ret: 'const char *', args: ['const struct transcribe_session *'] },
   'transcribe_get_model': { ret: 'const struct transcribe_model *', args: ['const struct transcribe_session *'] },

@@ -28,5 +28,13 @@ multitalker parakeet) keep `transcribe_run_params::diarize` and stay ASR.
 The DIARIZE role is for models whose product is speaker turns
 (Sortformer).
 
+A DIARIZE session can also take a recording in pieces
+(`transcribe_diarize_stream_begin` / `_feed` / `_finish`): the segments decided
+so far are readable after each feed, speaker ids stay the same for the whole
+recording, and the final result equals `transcribe_diarize_run` on the
+concatenated audio. Families without this mode return
+`TRANSCRIBE_ERR_NOT_IMPLEMENTED` (Nemotron-3-Diarization has it; Sortformer
+does not).
+
 Family extensions name the entry point they apply to through their slot;
 see `docs/extension-kinds.md`.

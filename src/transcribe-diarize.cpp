@@ -115,19 +115,9 @@ static transcribe_status diarize_session_init_impl(transcribe_model *           
     return TRANSCRIBE_OK;
 }
 
-static transcribe_status diarize_run_impl(transcribe_diarize_session *      session,
-                                          const float *                     pcm,
-                                          int                               n_samples,
-                                          const transcribe_diarize_params * params) {
-    // Everything up to the commit point leaves the previous result intact.
-    if (session == nullptr || pcm == nullptr || n_samples <= 0 || !transcribe::pcm_is_finite(pcm, n_samples)) {
-        return TRANSCRIBE_ERR_INVALID_ARG;
-    }
-    transcribe_diarize_params defaults;
-    transcribe_diarize_params_init(&defaults);
-    if (params == nullptr) {
-        params = &defaults;
-    }
+// Pure check of a run / stream_begin params struct (non-NULL) for this model.
+static transcribe_status diarize_check_params(const transcribe_diarize_session * session,
+                                              const transcribe_diarize_params *  params) {
     if (const auto st = check_input_struct_size(params->struct_size, k_min_params_size); st != TRANSCRIBE_OK) {
         return st;
     }
@@ -145,11 +135,39 @@ static transcribe_status diarize_run_impl(transcribe_diarize_session *      sess
             }
         }
     }
+    return TRANSCRIBE_OK;
+}
 
+// Commit point shared by run and stream_begin: drop the previous result and
+// any stream in progress.
+static void diarize_clear_result(transcribe_diarize_session * session) {
     session->segments.clear();
-    session->t_mel_us    = 0;
-    session->t_encode_us = 0;
-    session->t_decode_us = 0;
+    session->stream_active     = false;
+    session->stream_decided_ms = 0;
+    session->t_mel_us          = 0;
+    session->t_encode_us       = 0;
+    session->t_decode_us       = 0;
+}
+
+static transcribe_status diarize_run_impl(transcribe_diarize_session *      session,
+                                          const float *                     pcm,
+                                          int                               n_samples,
+                                          const transcribe_diarize_params * params) {
+    // Everything up to the commit point leaves the previous result intact.
+    if (session == nullptr || pcm == nullptr || n_samples <= 0 || !transcribe::pcm_is_finite(pcm, n_samples)) {
+        return TRANSCRIBE_ERR_INVALID_ARG;
+    }
+    transcribe_diarize_params defaults;
+    transcribe_diarize_params_init(&defaults);
+    if (params == nullptr) {
+        params = &defaults;
+    }
+    if (const auto st = diarize_check_params(session, params); st != TRANSCRIBE_OK) {
+        return st;
+    }
+    const transcribe::DiarizeOps * ops = diarize_ops(session->model);
+
+    diarize_clear_result(session);
     transcribe::ScratchReleaseGuard release{ session, true };
 
     transcribe::DiarizeProbs out;
@@ -159,6 +177,101 @@ static transcribe_status diarize_run_impl(transcribe_diarize_session *      sess
     std::vector<transcribe::SpeakerSegmentEntry> segments;
     transcribe::probs_to_segments(out.probs.data(), out.n_frames, out.n_speakers, out.frame_ms, segments);
     session->segments.swap(segments);
+    return TRANSCRIBE_OK;
+}
+
+static transcribe_status diarize_stream_begin_impl(transcribe_diarize_session *      session,
+                                                   const transcribe_diarize_params * params) {
+    // Everything up to the commit point leaves the previous result (and a
+    // stream in progress) intact.
+    if (session == nullptr) {
+        return TRANSCRIBE_ERR_INVALID_ARG;
+    }
+    const transcribe::DiarizeOps * ops = diarize_ops(session->model);
+    if (ops->stream_begin == nullptr) {
+        return TRANSCRIBE_ERR_NOT_IMPLEMENTED;
+    }
+    transcribe_diarize_params defaults;
+    transcribe_diarize_params_init(&defaults);
+    if (params == nullptr) {
+        params = &defaults;
+    }
+    if (const auto st = diarize_check_params(session, params); st != TRANSCRIBE_OK) {
+        return st;
+    }
+
+    diarize_clear_result(session);
+    if (const auto st = ops->stream_begin(session, params); st != TRANSCRIBE_OK) {
+        session->release_scratch();
+        return st;
+    }
+    session->stream_active = true;
+    return TRANSCRIBE_OK;
+}
+
+// A failed feed / finish ends the stream with an empty result.
+static transcribe_status diarize_stream_fail(transcribe_diarize_session * session, transcribe_status st) {
+    session->segments.clear();
+    session->stream_active     = false;
+    session->stream_decided_ms = 0;
+    return st;
+}
+
+static transcribe_status diarize_stream_feed_impl(transcribe_diarize_session * session,
+                                                  const float *                pcm,
+                                                  int                          n_samples) {
+    if (session == nullptr) {
+        return TRANSCRIBE_ERR_INVALID_ARG;
+    }
+    const transcribe::DiarizeOps * ops = diarize_ops(session->model);
+    if (ops->stream_feed == nullptr) {
+        return TRANSCRIBE_ERR_NOT_IMPLEMENTED;
+    }
+    // Rejected input leaves the stream as it was.
+    if (!session->stream_active || n_samples < 0 ||
+        (n_samples > 0 && (pcm == nullptr || !transcribe::pcm_is_finite(pcm, n_samples)))) {
+        return TRANSCRIBE_ERR_INVALID_ARG;
+    }
+    if (n_samples == 0) {
+        return TRANSCRIBE_OK;
+    }
+
+    // Armed only on failure: the scheduler stays between feeds.
+    transcribe::ScratchReleaseGuard release{ session, true };
+    transcribe::DiarizeProbsView    decided;
+    if (const auto st = ops->stream_feed(session, pcm, n_samples, decided); st != TRANSCRIBE_OK) {
+        return diarize_stream_fail(session, st);
+    }
+    std::vector<transcribe::SpeakerSegmentEntry> segments;
+    transcribe::probs_to_segments(decided.probs, decided.n_frames, decided.n_speakers, decided.frame_ms, segments);
+    session->segments.swap(segments);
+    session->stream_decided_ms = static_cast<int64_t>(std::llround(decided.n_frames * decided.frame_ms));
+    release.armed              = false;
+    return TRANSCRIBE_OK;
+}
+
+static transcribe_status diarize_stream_finish_impl(transcribe_diarize_session * session) {
+    if (session == nullptr) {
+        return TRANSCRIBE_ERR_INVALID_ARG;
+    }
+    const transcribe::DiarizeOps * ops = diarize_ops(session->model);
+    if (ops->stream_finish == nullptr) {
+        return TRANSCRIBE_ERR_NOT_IMPLEMENTED;
+    }
+    if (!session->stream_active) {
+        return TRANSCRIBE_ERR_INVALID_ARG;
+    }
+
+    session->stream_active = false;
+    transcribe::ScratchReleaseGuard release{ session, true };
+    transcribe::DiarizeProbs        out;
+    if (const auto st = ops->stream_finish(session, out); st != TRANSCRIBE_OK) {
+        return diarize_stream_fail(session, st);
+    }
+    std::vector<transcribe::SpeakerSegmentEntry> segments;
+    transcribe::probs_to_segments(out.probs.data(), out.n_frames, out.n_speakers, out.frame_ms, segments);
+    session->segments.swap(segments);
+    session->stream_decided_ms = static_cast<int64_t>(std::llround(out.n_frames * out.frame_ms));
     return TRANSCRIBE_OK;
 }
 
@@ -180,6 +293,10 @@ extern "C" transcribe_status transcribe_diarize_get_segment(const struct transcr
                                                             struct transcribe_speaker_segment *       out) {
     const bool in_range = i >= 0 && i < transcribe_diarize_n_segments(session);
     return transcribe::copy_out_speaker_segment(in_range ? &session->segments[static_cast<size_t>(i)] : nullptr, out);
+}
+
+extern "C" int64_t transcribe_diarize_stream_decided_ms(const struct transcribe_diarize_session * session) {
+    return session != nullptr ? session->stream_decided_ms : 0;
 }
 
 extern "C" transcribe_status transcribe_diarize_get_timings(const struct transcribe_diarize_session * session,
@@ -220,4 +337,21 @@ extern "C" transcribe_status transcribe_diarize_run(struct transcribe_diarize_se
                                                     const struct transcribe_diarize_params * params) {
     return api_guard_status("transcribe_diarize_run",
                             [&] { return diarize_run_impl(session, pcm, n_samples, params); });
+}
+
+extern "C" transcribe_status transcribe_diarize_stream_begin(struct transcribe_diarize_session *      session,
+                                                             const struct transcribe_diarize_params * params) {
+    return api_guard_status("transcribe_diarize_stream_begin",
+                            [&] { return diarize_stream_begin_impl(session, params); });
+}
+
+extern "C" transcribe_status transcribe_diarize_stream_feed(struct transcribe_diarize_session * session,
+                                                            const float *                       pcm,
+                                                            int                                 n_samples) {
+    return api_guard_status("transcribe_diarize_stream_feed",
+                            [&] { return diarize_stream_feed_impl(session, pcm, n_samples); });
+}
+
+extern "C" transcribe_status transcribe_diarize_stream_finish(struct transcribe_diarize_session * session) {
+    return api_guard_status("transcribe_diarize_stream_finish", [&] { return diarize_stream_finish_impl(session); });
 }

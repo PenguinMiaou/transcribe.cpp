@@ -8,7 +8,8 @@
 // The product path is always NeMo's synchronous streaming loop (AOSC speaker
 // cache + FIFO at 80 ms, driven by the x8 average-pooled probabilities):
 // transcribe_diarize_run drives the per-chunk step (model.cpp) and host
-// state machine (stream.cpp) over the whole recording.
+// state machine (stream.cpp) over the whole recording; the
+// transcribe_diarize_stream_* calls drive the same loop as audio arrives.
 
 #pragma once
 
@@ -154,6 +155,14 @@ struct Nemotron3DiarSession final : public transcribe_diarize_session {
     std::vector<int32_t> positions;
 
     Utterance utt;
+
+    // Push mode (transcribe_diarize_stream_*): fed PCM not yet fully turned
+    // into mel, starting at global sample `stream_pcm_base` (a multiple of
+    // the hop). Bounded: a few hops of history plus the samples whose mel
+    // frame still waits for right context.
+    std::vector<float> stream_pcm;
+    int64_t            stream_pcm_base = 0;
+    int64_t            stream_n_fed    = 0;
 };
 
 }  // namespace transcribe::nemotron3_diar

@@ -1049,10 +1049,13 @@ static transcribe_status diarize_run(transcribe_diarize_session *      session,
 }
 
 static const DiarizeOps k_diarize_ops = {
-    /* .max_speakers = */ diarize_max_speakers,
-    /* .new_session  = */ diarize_new_session,
-    /* .run_validate = */ diarize_run_validate,
-    /* .run          = */ diarize_run,
+    /* .max_speakers  = */ diarize_max_speakers,
+    /* .new_session   = */ diarize_new_session,
+    /* .run_validate  = */ diarize_run_validate,
+    /* .run           = */ diarize_run,
+    /* .stream_begin  = */ nullptr,
+    /* .stream_feed   = */ nullptr,
+    /* .stream_finish = */ nullptr,
 };
 
 extern const Arch arch = {
